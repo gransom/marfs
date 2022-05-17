@@ -1,0 +1,34 @@
+name: MarFS CI
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+
+jobs:
+  Build:
+    env:
+      Marfs_deps: ""
+    runs-on: ubuntu-latest
+    steps:
+    - uses: $GITHUB_REPOSITORY_OWNER/erasureUtils/.github/workflows/ci.yml@main
+
+    - name: Checkout MarFS
+      uses: actions/checkout@v3
+      with:
+        path: marfs
+
+    - name: Install MarFS build dependencies
+      run: sudo apt install $Marfs_deps
+
+    - name: Build and check MarFS
+      run: |
+        cd marfs
+        mkdir install
+        autoreconf -i
+        ./configure --prefix=$PWD/install LDFLAGS="-L$GITHUB_WORKSPACE/erasureUtils/install/lib" CPPFLAGS="-I$GITHUB_WORKSPACE/erasureUtils/install/include"
+        make install
+        make check
+
+    - name: Return to workspace root
+      run: cd $GITHUB_WORKSPACE
