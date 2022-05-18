@@ -6,7 +6,7 @@ on:
 
 jobs:
   Build_erasureUtils:
-    uses: dmp265/erasureUtils/.github/workflows/ci.yml@main
+    uses: dmp265/erasureUtils/.github/workflows/ci.yml@master
 
   Build_MarFS:
     needs: Build_erasureUtils
