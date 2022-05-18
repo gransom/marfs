@@ -6,6 +6,11 @@ on:
   workflow_call:
 
 jobs:
+  Test:
+    runs-on: ubuntu-latest
+    steps:
+    - run: echo $GITHUB_REPOSITORY_OWNER
+
   Build_erasureUtils:
     uses: $GITHUB_REPOSITORY_OWNER/erasureUtils/.github/workflows/ci.yml@main
 
