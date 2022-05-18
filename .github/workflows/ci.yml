@@ -3,11 +3,10 @@ name: MarFS CI
 on:
   push:
   pull_request:
-  workflow_call:
 
 jobs:
   Build_erasureUtils:
-    uses: $GITHUB_REPOSITORY_OWNER/erasureUtils/.github/workflows/ci.yml@main
+    uses: dmp265/erasureUtils/.github/workflows/ci.yml@main
 
   Build_MarFS:
     needs: Build_erasureUtils
