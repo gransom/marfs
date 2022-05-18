@@ -6,20 +6,20 @@ on:
   workflow_call:
 
 jobs:
-  Build:
-    env:
-      Marfs_deps: ""
+  Build_erasureUtils:
+    uses: $GITHUB_REPOSITORY_OWNER/erasureUtils/.github/workflows/ci.yml@main
+
+  Build_MarFS:
+    needs: Build_erasureUtils
     runs-on: ubuntu-latest
     steps:
-    - uses: $GITHUB_REPOSITORY_OWNER/erasureUtils/.github/workflows/ci.yml@main
-
     - name: Checkout MarFS
       uses: actions/checkout@v3
       with:
         path: marfs
 
     - name: Install MarFS build dependencies
-      run: sudo apt install $Marfs_deps
+      run: sudo apt install openmpi
 
     - name: Build and check MarFS
       run: |
