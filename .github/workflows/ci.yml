@@ -11,11 +11,11 @@ jobs:
     steps:
     - run: echo $GITHUB_REPOSITORY_OWNER
 
-  Build_erasureUtils:
-    uses: $GITHUB_REPOSITORY_OWNER/erasureUtils/.github/workflows/ci.yml@main
+  #Build_erasureUtils:
+  #  uses: $GITHUB_REPOSITORY_OWNER/erasureUtils/.github/workflows/ci.yml@main
 
   Build_MarFS:
-    needs: Build_erasureUtils
+  #  needs: Build_erasureUtils
     runs-on: ubuntu-latest
     steps:
     - name: Checkout MarFS
