@@ -3,13 +3,16 @@ name: MarFS CI
 on:
   push:
   pull_request:
-  
-env:
-  Owner: $GITHUB_REPOSITORY_OWNER
 
 jobs:
+  Test:
+    runs-on: ubuntu-latest
+    steps:
+    - run: echo "'$GITHUB_REPOSITORY_OWNER'"
+    - run: echo "'dmp265'"
+
   Build_erasureUtils:
-    uses: $Owner/erasureUtils/.github/workflows/ci.yml@master
+    uses: "dmp265/erasureUtils/.github/workflows/ci.yml@master"
 
   Build_MarFS:
     needs: Build_erasureUtils
