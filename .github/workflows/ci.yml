@@ -9,7 +9,6 @@ on:
 jobs:
   Build:
     env:
-      Owner: $GITHUB_REPOSITORY_OWNER
       Isal_assembler: nasm
       Ne_deps: "autoconf libxml2-dev"
       Marfs_deps: "openmpi-bin openmpi-common libopenmpi-dev"
@@ -37,7 +36,7 @@ jobs:
     - name: Checkout erasureUtils
       uses: actions/checkout@v3
       with:
-        repository: env.Owner/erasureUtils
+        repository: dmp265/erasureUtils
         path: erasureUtils
 
     - name: Install erasureUtils build dependencies
