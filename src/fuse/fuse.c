@@ -478,7 +478,7 @@ int fuse_open(const char *path, struct fuse_file_info *ffi)
     return -err;
   }
 
-  LOG( LOG_INFO, "New MarFS %s Handle: %p\n", (flags == MARFS_READ) ? "Read" : "Write", 
+  LOG( LOG_INFO, "New MarFS %s Handle: %p\n", (flags == MARFS_READ) ? "Read" : "Write",
        (void*)ffi->fh );
   return 0;
 }
@@ -600,7 +600,7 @@ int fuse_readlink(const char *path, char *buf, size_t size)
 
   exit_user(&u_ctxt);
 
-  return (int)ret;
+  return 0;
 }
 
 int fuse_release(const char *path, struct fuse_file_info *ffi)
