@@ -166,6 +166,60 @@ int genstreamid(char* ctag, const marfs_ns* ns, char** streamid, size_t* rheader
 }
 
 /**
+ * Generate a repack marker path for a file
+ * @param const char* rpath : Reference path of the repacked file ( can be left NULL, if unknown )
+ * @param FTAG* ftag : FTAG value of the repacked file
+ * @param marfs_ms* ms : Current marfs metascheme
+ * @return char* : String path of the repack marker file
+ */
+char* repackmarkertgt( const char* rpath, FTAG* ftag, const marfs_ms* ms ) {
+   // check for an rpath arg
+   char* refpath = NULL;
+   if ( rpath == NULL ) {
+      // gen an rpath if we didn't get one
+      refpath = datastream_genrpath( ftag, ms );
+   }
+   else {
+      refpath = strdup( rpath );
+   }
+   if ( refpath == NULL ) {
+      LOG( LOG_ERR, "Failed to identify/duplicate rpath of the repacked file\n" );
+      return NULL;
+   }
+   // identify the parent dir of the refpath
+   const char* rparse = refpath;
+   const char* rparent = refpath;
+   while ( *rparse != '\0' ) {
+      if ( *rparse == '/' ) { rparent = rparse + 1; }
+      rparse++;
+   }
+   size_t rparentlen = rparent - refpath; // pointer arithmetic to calc length of parent dir string
+   // identify the repack marker name for this file
+   size_t rmarklen = ftag_repackmarker( ftag, NULL, 0 );
+   if ( rmarklen == 0 ) {
+      LOG( LOG_ERR, "Failed to identify repack marker for reference target: \"%s\"\n", refpath );
+      free( refpath );
+      return NULL;
+   }
+   // construct the final string
+   char* rmarkstr = malloc( sizeof(char) * (rparentlen + rmarklen + 1) );
+   if ( rmarkstr == NULL ) {
+      LOG( LOG_ERR, "Failed to allocate space for a repack marker path\n" );
+      free( refpath );
+      return NULL;
+   }
+   snprintf( rmarkstr, rparentlen + 1, "%s", refpath );
+   free( refpath );
+   if ( ftag_repackmarker( ftag, rmarkstr + rparentlen, rmarklen + 1 ) != rmarklen ) {
+      LOG( LOG_ERR, "Repack marker has an inconsistent length\n" );
+      free(rmarkstr);
+      errno = EFAULT;
+      return NULL;
+   }
+   return rmarkstr;
+}
+
+/**
  * Frees the provided stream, aborting the datahandle and closing all metahandles
  * @param DATASTREAM stream : DATASTREAM to be freed
  */
@@ -273,9 +327,17 @@ int putftag(DATASTREAM stream, STREAMFILE* file) {
          return -1;
       }
    }
-   if (ms->mdal->fsetxattr(file->metahandle, 1, FTAG_NAME, stream->ftagstr, prres, 0)) {
-      LOG(LOG_ERR, "Failed to attach marfs ftag value: \"%s\"\n", stream->ftagstr);
-      return -1;
+   if ( stream->type == REPACK_STREAM ) {
+      if (ms->mdal->fsetxattr(file->metahandle, 1, TREPACK_TAG_NAME, stream->ftagstr, prres, 0)) {
+         LOG(LOG_ERR, "Failed to attach marfs repack target ftag value: \"%s\"\n", stream->ftagstr);
+         return -1;
+      }
+   }
+   else {
+      if (ms->mdal->fsetxattr(file->metahandle, 1, FTAG_NAME, stream->ftagstr, prres, 0)) {
+         LOG(LOG_ERR, "Failed to attach marfs ftag value: \"%s\"\n", stream->ftagstr);
+         return -1;
+      }
    }
 
    return 0;
@@ -343,7 +405,7 @@ int linkfile(DATASTREAM stream, const char* refpath, const char* tgtpath, MDAL_C
    // shorthand references
    const marfs_ms* ms = &(stream->ns->prepo->metascheme);
    // attempt to link the specified file to the specified user path
-   if (ms->mdal->linkref(ctxt, refpath, tgtpath)) {
+   if (ms->mdal->linkref(ctxt, 0, refpath, tgtpath)) {
       // if we got EEXIST, attempt to unlink the existing target and retry
       if (errno != EEXIST) {
          // any non-EEXIST error is fatal
@@ -356,7 +418,7 @@ int linkfile(DATASTREAM stream, const char* refpath, const char* tgtpath, MDAL_C
          LOG(LOG_ERR, "Failed to unlink existing file: \"%s\"\n", tgtpath);
          return -1;
       }
-      else if (ms->mdal->linkref(ctxt, refpath, tgtpath)) {
+      else if (ms->mdal->linkref(ctxt, 0, refpath, tgtpath)) {
          // This indicates either we're racing with another proc, or something more unusual
          //   Just fail out with whatever errno we get from flink()
          LOG(LOG_ERR, "Failed to link reference file to final location after retry\n");
@@ -399,15 +461,22 @@ int genrecoveryinfo(DATASTREAM stream, RECOVERY_FINFO* finfo, STREAMFILE* file, 
       finfo->size = stval.st_size;
       return 0;
    }
+
+   // align our finalized file times with those we will be using in recovery info
+   file->times[0] = stval.st_atim;
+   file->times[1] = stval.st_mtim;
+
+   if ( stream->type == REPACK_STREAM ) {
+      // repack streams terminate early, as we don't yet have a recovery path
+      return 0;
+   }
+
+   // store the recovery path
    finfo->path = strdup(path);
    if (finfo->path == NULL) {
       LOG(LOG_ERR, "Failed to duplicate file path into recovery info\n");
       return -1;
    }
-
-   // align our finalized file times with those we will be using in recovery info
-   file->times[0] = stval.st_atim;
-   file->times[1] = stval.st_mtim;
 
    // calculate the length of the recovery info
    size_t recoverybytes = recovery_finfotostr(finfo, NULL, 0);
@@ -644,17 +713,13 @@ int open_existing_file(DATASTREAM stream, const char* path, char rpathflag, MDAL
       errno = EINVAL;
       return -1;
    }
-   if (stream->type == READ_STREAM &&
-      !(curfile->ftag.state & FTAG_READABLE)) {
+   if ( stream->type == READ_STREAM &&
+        !(curfile->ftag.state & FTAG_READABLE)) {
       LOG(LOG_ERR, "Target file is not yet readable\n");
       free(curfile->ftag.ctag);
       curfile->ftag.ctag = NULL;
       free(curfile->ftag.streamid);
       curfile->ftag.streamid = NULL;
-      if (stream->type == READ_STREAM) {
-         // no FTAG value exists, but preserve the meta handle for potential direct read
-         return 1;
-      }
       curmdal->close(curfile->metahandle);
       curfile->metahandle = NULL;
       errno = EINVAL;
@@ -706,6 +771,266 @@ int open_existing_file(DATASTREAM stream, const char* path, char rpathflag, MDAL
 }
 
 /**
+ * Prep the specified file for repack at the current ( 'curfile' ) STREAMFILE reference position
+ * @param DATASTREAM stream : Current DATASTREAM
+ * @param const char* path : Reference path of the file to be opened
+ * @param MDAL_CTXT ctxt : Current MDAL_CTXT
+ * @return int : Zero on success;
+ *               One if no FTAG was found, but the meta handle has been preserved;
+ *               or -1 on failure
+ */
+int open_repack_file(DATASTREAM stream, const char* path, MDAL_CTXT ctxt) {
+
+   // populate shorthand references
+   const marfs_ds* ds = &(stream->ns->prepo->datascheme);
+   const marfs_ms* ms = &(stream->ns->prepo->metascheme);
+
+   // check if the current stream has space for this new file ref
+   if (stream->curfile >= stream->filealloc) {
+      stream->filealloc = allocfiles(&(stream->files), stream->filealloc, ds->objfiles + 1);
+      if (stream->filealloc == 0) {
+         LOG(LOG_ERR, "Failed to expand file list allocation\n");
+         stream->filealloc = stream->curfile - 1;
+         if (errno == EBADFD) {
+            errno = ENOMSG;
+         } // don't allow our reserved EBADFD value
+         return -1;
+      }
+   }
+
+   // more shorthand refs
+   MDAL curmdal = stream->ns->prepo->metascheme.mdal;
+   STREAMFILE* curfile = stream->files + stream->curfile;
+   // get file info ( need to stash times prior to any modification )
+   struct stat stval;
+   if (curmdal->statref(ctxt, path, &(stval))) {
+      LOG(LOG_ERR, "Failed to stat meta file for initial time values: \"%s\"\n", path);
+      return -1;
+   }
+   // open a handle for the tgt file
+   curfile->metahandle = curmdal->openref( ctxt, path, O_RDWR, 0 );
+   if ( curfile->metahandle == NULL ) {
+      LOG( LOG_ERR, "Failed to open target reference path: \"%s\"\n", path );
+      return -1;
+   }
+   LOG( LOG_INFO, "Successfully opened repack reference target: \"%s\"\n", path );
+   // record times and note to reset them at completion
+   curfile->times[0] = stval.st_atim;
+   curfile->times[1] = stval.st_mtim;
+   curfile->dotimes = 1;
+   // retrieve the FTAG of our target file
+   if ( getftag( stream, curfile ) ) {
+      LOG( LOG_ERR, "Failed to retrieve FTAG of reference target: \"%s\"\n", path );
+      curmdal->close(curfile->metahandle);
+      curfile->metahandle = NULL;
+      return -1;
+   }
+   // check if it is safe to access this file
+   if ( !(curfile->ftag.state & FTAG_READABLE) ) {
+      LOG(LOG_ERR, "Target file is not yet readable\n");
+      free(curfile->ftag.ctag);
+      curfile->ftag.ctag = NULL;
+      free(curfile->ftag.streamid);
+      curfile->ftag.streamid = NULL;
+      curmdal->close(curfile->metahandle);
+      curfile->metahandle = NULL;
+      errno = EINVAL;
+      return -1;
+   }
+   // identify our repack marker
+   char* rmarkstr = repackmarkertgt( path, &(curfile->ftag), ms );
+   if ( rmarkstr == NULL ) {
+      LOG( LOG_ERR, "Failed to identify repack marker path of file \"%s\"\n", path );
+      free(curfile->ftag.ctag);
+      curfile->ftag.ctag = NULL;
+      free(curfile->ftag.streamid);
+      curfile->ftag.streamid = NULL;
+      curmdal->close(curfile->metahandle);
+      curfile->metahandle = NULL;
+      return -1;
+   }
+   // create the repack marker
+   MDAL_FHANDLE rmarker = curmdal->openref( ctxt, rmarkstr, O_WRONLY | O_EXCL | O_CREAT, 0700 );
+   if ( rmarker == NULL ) {
+      LOG( LOG_ERR, "Failed to create repack marker file: \"%s\"\n", rmarkstr );
+      free(rmarkstr);
+      free(curfile->ftag.ctag);
+      curfile->ftag.ctag = NULL;
+      free(curfile->ftag.streamid);
+      curfile->ftag.streamid = NULL;
+      curmdal->close(curfile->metahandle);
+      curfile->metahandle = NULL;
+      return -1;
+   }
+   LOG( LOG_INFO, "Created repack marker file: \"%s\"\n", rmarkstr );
+   // align marker file time values with tgt file times
+   if ( curmdal->futimens( rmarker, curfile->times ) ) {
+      LOG( LOG_ERR, "Failed to set time values on repack marker file: \"%s\"\n", rmarkstr );
+      curmdal->close( rmarker );
+      free(rmarkstr);
+      free(curfile->ftag.ctag);
+      curfile->ftag.ctag = NULL;
+      free(curfile->ftag.streamid);
+      curfile->ftag.streamid = NULL;
+      curmdal->close(curfile->metahandle);
+      curfile->metahandle = NULL;
+      return -1;
+   }
+   free( rmarkstr );
+   // establish a new FTAG value
+   curfile->ftag.majorversion = FTAG_CURRENT_MAJORVERSION;
+   curfile->ftag.minorversion = FTAG_CURRENT_MINORVERSION;
+   free(curfile->ftag.ctag);
+   curfile->ftag.ctag = stream->ctag;
+   free(curfile->ftag.streamid);
+   curfile->ftag.streamid = stream->streamid;
+   curfile->ftag.objfiles = ds->objfiles;
+   curfile->ftag.objsize = ds->objsize;
+   curfile->ftag.fileno = stream->fileno;
+   curfile->ftag.objno = stream->objno;   // potentially modified below
+   curfile->ftag.offset = stream->offset; // potentially modified below
+   curfile->ftag.endofstream = 0;
+   curfile->ftag.protection = ds->protection;
+   curfile->ftag.bytes = 0;
+   curfile->ftag.availbytes = 0;
+   curfile->ftag.recoverybytes = 0; // modified below
+   curfile->ftag.state = FTAG_INIT;
+
+   // populate recovery info inode/mtime and calculate recovery finfo length
+   RECOVERY_FINFO* finfo = &(stream->finfo);
+   finfo->inode = stval.st_ino;
+   finfo->mode = stval.st_mode;
+   finfo->owner = stval.st_uid;
+   finfo->group = stval.st_gid;
+   finfo->size = stval.st_size; // repack streams keep track of expected total file size here
+   finfo->mtime.tv_sec = stval.st_mtim.tv_sec;
+   finfo->mtime.tv_nsec = stval.st_mtim.tv_nsec;
+   finfo->eof = 0;
+
+   // store the recovery path ( even though this is borderline useless and should be changed later )
+   if ( finfo->path ) { free( finfo->path ); }
+   finfo->path = strdup(path);
+   if (finfo->path == NULL) {
+      LOG(LOG_ERR, "Failed to duplicate file path into recovery info\n");
+      curmdal->close( rmarker );
+      curmdal->close(curfile->metahandle);
+      curfile->metahandle = NULL;
+      return -1;
+   }
+
+   // calculate the length of the recovery info
+   size_t recoverybytes = recovery_finfotostr(finfo, NULL, 0);
+   if (recoverybytes < 1) {
+      LOG(LOG_ERR, "Failed to calculate recovery info size for \"%s\"\n", path);
+      free(finfo->path);
+      finfo->path = NULL;
+      curmdal->close( rmarker );
+      curmdal->close(curfile->metahandle);
+      curfile->metahandle = NULL;
+      return -1;
+   }
+   curfile->ftag.recoverybytes = recoverybytes;
+
+   // ensure the recovery info size is compatible with the current object size
+   if (curfile->ftag.objsize && (stream->recoveryheaderlen + curfile->ftag.recoverybytes) >= curfile->ftag.objsize) {
+      LOG(LOG_ERR, "Recovery info size of new file is incompatible with current object size\n");
+      free(finfo->path);
+      finfo->path = NULL;
+      curmdal->close( rmarker );
+      curmdal->close(curfile->metahandle);
+      curfile->metahandle = NULL;
+      errno = ENAMETOOLONG; // this is most likely an issue with path length
+      return -1;
+   }
+
+   // ensure that the current object still has space remaining for this file
+   if (curfile->ftag.objsize && (curfile->ftag.objsize - stream->offset) < curfile->ftag.recoverybytes) {
+      // we're too far into the current obj to fit any more data
+      LOG(LOG_INFO, "Shifting to new object, as current can't hold recovery info\n");
+      curfile->ftag.objno++;
+      curfile->ftag.offset = stream->recoveryheaderlen;
+   }
+   else if (curfile->ftag.objfiles && stream->curfile >= curfile->ftag.objfiles) {
+      // there are too many files in the current obj to fit this one
+      LOG(LOG_INFO, "Shifting to new object, as current can't hold another file\n");
+      curfile->ftag.objno++;
+      curfile->ftag.offset = stream->recoveryheaderlen;
+   }
+
+   // Attach the new FTAG value to the marker file
+   MDAL_FHANDLE tgtfh = curfile->metahandle;
+   curfile->metahandle = rmarker; // swap marker FH into curfile, to allow putftag() to work on it instead
+   if ( putftag( stream, curfile ) ) {
+      LOG( LOG_ERR, "Failed to attach tgt FTAG to repack marker file\n" );
+      free(finfo->path);
+      finfo->path = NULL;
+      curmdal->close( rmarker );
+      curmdal->close(tgtfh);
+      curfile->metahandle = NULL;
+      return -1;
+   }
+   curfile->metahandle = tgtfh; // restore the appropriate FH
+   if ( curmdal->close( rmarker ) ) {
+      LOG( LOG_ERR, "Failed to properly close repack marker file\n" );
+      free(finfo->path);
+      finfo->path = NULL;
+      curmdal->close(curfile->metahandle);
+      curfile->metahandle = NULL;
+      return -1;
+   }
+
+   // link the existing file to the new reference location
+   char* newpath = datastream_genrpath(&(curfile->ftag), &(stream->ns->prepo->metascheme));
+   if (newpath == NULL) {
+      LOG(LOG_ERR, "Failed to identify new reference path for repacked file: \"%s\"\n", path);
+      if (errno == EBADFD) {
+         errno = ENOMSG;
+      } // don't allow our reserved EBADFD value
+      free(finfo->path);
+      finfo->path = NULL;
+      curmdal->close(curfile->metahandle);
+      curfile->metahandle = NULL;
+      return -1;
+   }
+   if ( curmdal->linkref( ctxt, 1, path, newpath ) ) {
+      LOG( LOG_ERR, "Failed to link reference file \"%s\" to new stream ref location: \"%s\"\n", path, newpath );
+      free( newpath );
+      free(finfo->path);
+      finfo->path = NULL;
+      curmdal->close(curfile->metahandle);
+      curfile->metahandle = NULL;
+      return -1;
+   }
+   LOG( LOG_INFO, "Linked repack target (\"%s\") to new location (\"%s\")\n", path, newpath );
+   free( newpath );
+
+   if ( stream->recoveryheaderlen == 0 ) {
+      // calculate the recovery header length
+      RECOVERY_HEADER header =
+      {
+         .majorversion = RECOVERY_CURRENT_MAJORVERSION,
+         .minorversion = RECOVERY_CURRENT_MINORVERSION,
+         .ctag = curfile->ftag.ctag,
+         .streamid = curfile->ftag.streamid
+      };
+      size_t recoveryheaderlen = recovery_headertostr(&(header), NULL, 0);
+      if (recoveryheaderlen < 1) {
+         LOG(LOG_ERR, "Failed to identify length of stream recov header\n");
+         curmdal->close(curfile->metahandle);
+         curfile->metahandle = NULL;
+         return -1;
+      }
+      stream->recoveryheaderlen = recoveryheaderlen;
+   }
+
+   // update stream values
+   stream->objno = curfile->ftag.objno;
+   stream->offset = curfile->ftag.offset;
+
+   return 0;
+}
+
+/**
  * Open the current data object of the given DATASTREAM
  * @param DATASTREAM stream : Current DATASTREAM
  * @return int : Zero on success, or -1 on failure
@@ -734,7 +1059,7 @@ int open_current_obj(DATASTREAM stream) {
       stream->datahandle = ne_open(ds->nectxt, objname, location, erasure, NE_RDALL);
    }
    else {
-      if (stream->type == CREATE_STREAM) {
+      if (stream->type == CREATE_STREAM  ||  stream->type == REPACK_STREAM) {
          // need to update file bytes and/or datastate
          STREAMFILE* curfile = stream->files + stream->curfile;
          if ((curfile->ftag.state & FTAG_DATASTATE) < FTAG_SIZED) {
@@ -1125,8 +1450,8 @@ DATASTREAM genstream(STREAM_TYPE type, const char* path, char rpathflag, marfs_p
       // Read/Edit streams should only ever expect two files to be referenced at a time
       stream->filealloc = allocfiles(&(stream->files), stream->curfile, 2);
    }
-   else if (type == CREATE_STREAM) {
-      // Create streams are only restriced by the object packing limits
+   else if (type == CREATE_STREAM  ||  type == REPACK_STREAM) {
+      // Create/Repack streams are only restriced by the object packing limits
       stream->filealloc = allocfiles(&(stream->files), stream->curfile, ds->objfiles + 1);
    }
    if (stream->filealloc == 0) {
@@ -1136,32 +1461,36 @@ DATASTREAM genstream(STREAM_TYPE type, const char* path, char rpathflag, marfs_p
    }
 
    // populate info for the first stream file
-   stream->files[0].metahandle = NULL;
-   stream->files[0].ftag.majorversion = FTAG_CURRENT_MAJORVERSION;
-   stream->files[0].ftag.minorversion = FTAG_CURRENT_MINORVERSION;
-   stream->files[0].ftag.ctag = stream->ctag;
-   stream->files[0].ftag.streamid = stream->streamid;
-   stream->files[0].ftag.objfiles = ds->objfiles;
-   stream->files[0].ftag.objsize = ds->objsize;
-   stream->files[0].ftag.fileno = 0;
-   stream->files[0].ftag.objno = 0;
-   stream->files[0].ftag.endofstream = 0;
-   stream->files[0].ftag.offset = 0;
-   stream->files[0].ftag.protection = ds->protection;
-   stream->files[0].ftag.bytes = 0;
-   stream->files[0].ftag.availbytes = 0;
-   stream->files[0].ftag.recoverybytes = 0;
-   stream->files[0].ftag.state = FTAG_INIT; // no data written and no other access
-   stream->files[0].times[0].tv_sec = 0;
-   stream->files[0].times[0].tv_nsec = 0;
-   stream->files[0].times[1].tv_sec = 0;
-   stream->files[0].times[1].tv_nsec = 0;
-   stream->files[0].dotimes = 0;
+   STREAMFILE* curfile = &(stream->files[0]);
+   curfile->metahandle = NULL;
+   curfile->ftag.majorversion = FTAG_CURRENT_MAJORVERSION;
+   curfile->ftag.minorversion = FTAG_CURRENT_MINORVERSION;
+   curfile->ftag.ctag = stream->ctag;
+   curfile->ftag.streamid = stream->streamid;
+   curfile->ftag.objfiles = ds->objfiles;
+   curfile->ftag.objsize = ds->objsize;
+   curfile->ftag.fileno = 0;
+   curfile->ftag.objno = 0;
+   curfile->ftag.endofstream = 0;
+   curfile->ftag.offset = 0;
+   curfile->ftag.protection = ds->protection;
+   curfile->ftag.bytes = 0;
+   curfile->ftag.availbytes = 0;
+   curfile->ftag.recoverybytes = 0;
+   curfile->ftag.state = FTAG_INIT; // no data written and no other access
+   curfile->times[0].tv_sec = 0;
+   curfile->times[0].tv_nsec = 0;
+   curfile->times[1].tv_sec = 0;
+   curfile->times[1].tv_nsec = 0;
+   curfile->dotimes = 0;
 
    // perform type-dependent initialization
-   if (type == CREATE_STREAM) {
+   if (type == CREATE_STREAM  ||  type == REPACK_STREAM) {
       // set the ctag value
-      stream->ctag = strdup(ctag);
+      if ( ctag )
+         stream->ctag = strdup(ctag);
+      else
+         stream->ctag = strdup("UNKNOWN-CLIENT");
       if (stream->ctag == NULL) {
          LOG(LOG_ERR, "Failed to allocate space for stream Client Tag\n");
          freestream(stream);
@@ -1169,73 +1498,28 @@ DATASTREAM genstream(STREAM_TYPE type, const char* path, char rpathflag, marfs_p
       }
 
       // generate a new streamID
-      // NOTE -- This is the ONLY location in the MarFS code where streamIDs are generated.
-      //         All other funcs take the existing ID value.
-      struct timespec curtime;
-      if (clock_gettime(CLOCK_REALTIME, &curtime)) {
-         LOG(LOG_ERR, "Failed to determine the current time\n");
-         freestream(stream);
-         return NULL;
-      }
-      char* nsrepo = NULL;
-      char* nspath = NULL;
-      if (config_nsinfo(stream->ns->idstr, &(nsrepo), &(nspath))) {
-         LOG(LOG_ERR, "Failed to retrieve path/repo info for this stream's NS\n");
-         freestream(stream);
-         return NULL;
-      }
-      char* nsparse = nspath;
-      size_t nspathlen = 0;
-      for (; *nsparse != '\0'; nsparse++) {
-         // replace all '/' chars in a NS path with '#'
-         if (*nsparse == '/') {
-            *nsparse = '#';
-         }
-         nspathlen++;
-      }
-      size_t streamidlen = SIZE_DIGITS;  // to account for tv_sec (see numdigits.h)
-      streamidlen += SIZE_DIGITS; // to account for tv_nsec
-      streamidlen += strlen(nsrepo) + nspathlen; // to include NS/Repo info
-      streamidlen += 4; // for '#'/'.' seperators and null terminator
-      if ((stream->streamid = malloc(sizeof(char) * streamidlen)) == NULL) {
-         LOG(LOG_ERR, "Failed to allocate space for streamID\n");
-         free(nsrepo);
-         free(nspath);
-         freestream(stream);
-         return NULL;
-      }
-      ssize_t prres = snprintf(stream->streamid, streamidlen, "%s#%s#%zd.%ld",
-         nsrepo, nspath, curtime.tv_sec, curtime.tv_nsec);
-      if (prres <= 0 || prres >= streamidlen) {
+      if ( genstreamid( stream->ctag, stream->ns, &(stream->streamid), &(stream->recoveryheaderlen) ) ) {
          LOG(LOG_ERR, "Failed to generate streamID value\n");
-         free(nsrepo);
-         free(nspath);
-         freestream(stream);
-         return NULL;
-      }
-      free(nsrepo);
-      free(nspath);
-
-      // establish our recovery header length
-      RECOVERY_HEADER header = {
-         .majorversion = RECOVERY_CURRENT_MAJORVERSION,
-         .minorversion = RECOVERY_CURRENT_MINORVERSION,
-         .ctag = stream->ctag,
-         .streamid = stream->streamid
-      };
-      stream->recoveryheaderlen = recovery_headertostr(&(header), NULL, 0);
-      if (stream->recoveryheaderlen < 1) {
-         LOG(LOG_ERR, "Failed to identify length of create stream recov header\n");
          freestream(stream);
          return NULL;
       }
       stream->offset = stream->recoveryheaderlen;
 
-      // create the output file
-      if (create_new_file(stream, path, pos->ctxt, mode)) {
-         LOG(LOG_ERR, "Failed to create output file: \"%s\"\n", path);
-         freestream(stream);
-         return NULL;
+      if ( type == CREATE_STREAM ) {
+         // create the output file
+         if (create_new_file(stream, path, pos->ctxt, mode)) {
+            LOG(LOG_ERR, "Failed to create output file: \"%s\"\n", path);
+            freestream(stream);
+            return NULL;
+         }
+      }
+      else { // this is a repack stream
+         // open the first repack file
+         if ( open_repack_file(stream, path, pos->ctxt ) ) {
+            LOG(LOG_ERR, "Failed to open repack file: \"%s\"\n", path);
+            freestream(stream);
+            return NULL;
+         }
       }
 
    }
@@ -1279,7 +1563,7 @@ int gettargets(DATASTREAM stream, off_t offset, int whence, DATASTREAM_POSITION*
       // read streams are constrained by the metadata file size
       filesize = stream->finfo.size;
    }
-   else if (stream->type == CREATE_STREAM) {
+   else if (stream->type == CREATE_STREAM  ||  stream->type == REPACK_STREAM) {
       // create streams are constrained by the actual data size
       filesize = curtag.bytes;
    }
@@ -1318,7 +1602,7 @@ int gettargets(DATASTREAM stream, off_t offset, int whence, DATASTREAM_POSITION*
    }
    if (offset > filesize) {
       // we are seeking beyond the end of the file
-      if (stream->type == CREATE_STREAM) {
+      if (stream->type == CREATE_STREAM  ||  stream->type == REPACK_STREAM) {
          LOG(LOG_INFO, "Offset will require extending file from %zu to %zd\n",
             filesize, offset);
          filesize = offset;
@@ -1394,6 +1678,7 @@ int putfinfo(DATASTREAM stream) {
       free(oldstr);
    }
    // update recovery info size values
+   size_t origfinfosize = stream->finfo.size;
    if (stream->type == EDIT_STREAM) {
       DATASTREAM_POSITION dpos = {
          .totaloffset = 0,
@@ -1418,6 +1703,7 @@ int putfinfo(DATASTREAM stream) {
    if (genbytes > recoverybytes) {
       LOG(LOG_ERR, "File recovery info has an inconsistent length ( old=%zu, new=%zu )\n",
          recoverybytes, genbytes);
+      if ( stream->type == REPACK_STREAM ) { stream->finfo.size = origfinfosize; } // restore this value for repack
       errno = ENAMETOOLONG; // this is most likely to represent the issue, as this almost
                             //  certainly is the result of the recovery path changing
       return -1;
@@ -1426,6 +1712,7 @@ int putfinfo(DATASTREAM stream) {
       // finfo string is shorter than expected, so zero out the unused tail of the string
       bzero(stream->finfostr + genbytes, (recoverybytes + 1) - genbytes);
    }
+   if ( stream->type == REPACK_STREAM ) { stream->finfo.size = origfinfosize; } // restore this value for repack
    // Note -- previous writes should have ensured we have at least 'recoverybytes' of
    //         available spaece to write out the recovery string
    if (ne_write(stream->datahandle, stream->finfostr, recoverybytes) != recoverybytes) {
@@ -1449,6 +1736,15 @@ int putfinfo(DATASTREAM stream) {
 int finfile(DATASTREAM stream) {
    // get a reference to the active file
    STREAMFILE* curfile = stream->files + stream->curfile;
+
+   if ( stream->type == REPACK_STREAM ) {
+      // check if we've hit our expected total file size
+      if ( curfile->ftag.bytes != stream->finfo.size ) {
+         LOG( LOG_ERR, "Cannot complete repacked file with inappropriate byte count: %zu (expected=%zu)\n",
+                       curfile->ftag.bytes, stream->finfo.size );
+         return -1;
+      }
+   }
 
    // only perform this action if the file has not yet been finalized
    if ((curfile->ftag.state & FTAG_DATASTATE) < FTAG_FIN) {
@@ -1500,8 +1796,9 @@ int completefile(DATASTREAM stream, STREAMFILE* file) {
    // shorthand references
    const marfs_ms* ms = &(stream->ns->prepo->metascheme);
    // check for an extended file from a create stream
-   if ((file->ftag.state & FTAG_WRITEABLE) && stream->type == CREATE_STREAM) {
-      LOG(LOG_ERR, "Cannot complete extended file from original create stream\n");
+   if ((file->ftag.state & FTAG_WRITEABLE) && 
+       ( stream->type == CREATE_STREAM  ||  stream->type == REPACK_STREAM ) ) {
+      LOG(LOG_ERR, "Cannot complete extended file from the creating stream\n");
       ms->mdal->close(file->metahandle);
       file->metahandle = NULL; // NULL out this handle, so that we never double close()
       return -1;
@@ -1517,19 +1814,154 @@ int completefile(DATASTREAM stream, STREAMFILE* file) {
    file->ftag.state = (FTAG_COMP | FTAG_READABLE) | (file->ftag.state & ~(FTAG_DATASTATE));
    // update the ftag availbytes to reflect the actual data bytes
    file->ftag.availbytes = file->ftag.bytes;
-   // truncate the file to an appropriate length
-   if (ms->mdal->ftruncate(file->metahandle, file->ftag.availbytes)) {
-      LOG(LOG_ERR, "Failed to truncate file %zu to proper size\n", file->ftag.fileno);
-      ms->mdal->close(file->metahandle);
-      file->metahandle = NULL; // NULL out this handle, so that we never double close()
-      return -1;
-   }
    // set an updated ftag value
    if (putftag(stream, file)) {
       LOG(LOG_ERR, "Failed to update FTAG on file %zu to complete state\n", file->ftag.fileno);
       ms->mdal->close(file->metahandle);
       file->metahandle = NULL; // NULL out this handle, so that we never double close()
       return -1;
+   }
+   // repack streams require special consideration
+   if ( stream->type == REPACK_STREAM ) {
+      // pull the original FTAG string off this file
+      STREAMFILE origfile = { .metahandle = file->metahandle };
+      if ( getftag( stream, &(origfile) ) ) {
+         LOG( LOG_ERR, "Failed to retrieve original FTAG value from repacked file: \"%s\"\n", stream->finfo.path );
+         ms->mdal->close(file->metahandle);
+         file->metahandle = NULL; // NULL out this handle, so that we never double close()
+         return -1;
+      } // NOTE -- stream->ftagstr now contains the original FTAG value
+      // produce the original reference path of this file
+      char* origrefpath = datastream_genrpath( &(origfile.ftag), ms );
+      if ( origrefpath == NULL ) {
+         LOG( LOG_ERR, "Failed to identify original refpath of \"%s\"\n", stream->finfo.path );
+         free( origfile.ftag.ctag );
+         free( origfile.ftag.streamid );
+         ms->mdal->close(file->metahandle);
+         file->metahandle = NULL; // NULL out this handle, so that we never double close()
+         return -1;
+      }
+      // locate our repack marker file
+      char* rmarkstr = repackmarkertgt( origrefpath, &(origfile.ftag), ms );
+      if ( rmarkstr == NULL ) {
+         LOG( LOG_ERR, "Failed to identify repack marker path of \"%s\"\n", stream->finfo.path );
+         free( origrefpath );
+         free( origfile.ftag.ctag );
+         free( origfile.ftag.streamid );
+         ms->mdal->close(file->metahandle);
+         file->metahandle = NULL; // NULL out this handle, so that we never double close()
+         return -1;
+      }
+      // done with origfile values
+      free( origfile.ftag.ctag );
+      free( origfile.ftag.streamid );
+      origfile.metahandle = NULL;
+      // identify the NS path of the stream and establish a ctxt for it
+      char* nspath = NULL;
+      if ( config_nsinfo( stream->ns->idstr, NULL, &(nspath) ) ) {
+         LOG( LOG_ERR, "Failed to identify the NS path of the repack stream\n" );
+         free( rmarkstr );
+         free( origrefpath );
+         ms->mdal->close(file->metahandle);
+         file->metahandle = NULL; // NULL out this handle, so that we never double close()
+         return -1;
+      }
+      MDAL_CTXT ctxt = ms->mdal->newctxt( nspath, ms->mdal->ctxt );
+      if ( ctxt == NULL ) {
+         LOG( LOG_ERR, "Failed to create an MDAL_CTXT for NS \"%s\"\n", nspath );
+         free( rmarkstr );
+         free( origrefpath );
+         ms->mdal->close(file->metahandle);
+         file->metahandle = NULL; // NULL out this handle, so that we never double close()
+         return -1;
+      }
+      // open a handle for the repack marker
+      MDAL_FHANDLE rmarker = ms->mdal->openref( ctxt, rmarkstr, O_WRONLY, 0 );
+      if ( rmarker == NULL ) {
+         LOG( LOG_ERR, "Failed to open rebuild marker file \"%s\"\n", rmarkstr );
+         ms->mdal->destroyctxt( ctxt );
+         free( rmarkstr );
+         free( origrefpath );
+         ms->mdal->close(file->metahandle);
+         file->metahandle = NULL; // NULL out this handle, so that we never double close()
+         return -1;
+      }
+      // attach a copy of the original FTAG to the repack marker ( so the GC will pick it up, post rename )
+      if ( ms->mdal->fsetxattr( rmarker, 1, FTAG_NAME, stream->ftagstr, strlen(stream->ftagstr), XATTR_CREATE ) ) {
+         LOG( LOG_ERR, "Failed to attach orig FTAG value to repack marker \"%s\"\n", rmarkstr );
+         ms->mdal->close(rmarker);
+         ms->mdal->destroyctxt( ctxt );
+         free( rmarkstr );
+         free( origrefpath );
+         ms->mdal->close(file->metahandle);
+         file->metahandle = NULL; // NULL out this handle, so that we never double close()
+         return -1;
+      }
+      // done changing repack marker xattrs
+      if ( ms->mdal->close(rmarker) ) {
+         LOG( LOG_ERR, "Close failure of repack marker \"%s\"\n", rmarkstr );
+         ms->mdal->destroyctxt( ctxt );
+         free( rmarkstr );
+         free( origrefpath );
+         ms->mdal->close(file->metahandle);
+         file->metahandle = NULL; // NULL out this handle, so that we never double close()
+         return -1;
+      }
+      // attach the original FTAG to our file ( if not already present, as we want to preserve the TRUE original value )
+      if ( ms->mdal->fsetxattr( file->metahandle, 1, OREPACK_TAG_NAME, stream->ftagstr, strlen(stream->ftagstr), XATTR_CREATE )  &&  errno != EEXIST ) {
+         LOG( LOG_ERR, "Failed to attach orig FTAG value to repacked file \"%s\"\n", stream->finfo.path );
+         ms->mdal->destroyctxt( ctxt );
+         free( rmarkstr );
+         free( origrefpath );
+         ms->mdal->close(file->metahandle);
+         file->metahandle = NULL; // NULL out this handle, so that we never double close()
+         return -1;
+      }
+      // use putftag to update active FTAG by swapping out stream type ( this is a bit hacky )
+      stream->type = CREATE_STREAM; // switching from REPACK_STREAM causes this to update the real FTAG value
+      if( putftag( stream, file ) ) {
+         LOG( LOG_ERR, "Failed to update FTAG to final value for repacked file \"%s\"\n", stream->finfo.path );
+         stream->type = REPACK_STREAM;
+         ms->mdal->destroyctxt( ctxt );
+         free( rmarkstr );
+         free( origrefpath );
+         ms->mdal->close(file->metahandle);
+         file->metahandle = NULL; // NULL out this handle, so that we never double close()
+         return -1;
+      } // NOTE -- stream->ftagstr is NO LONGER the original FTAG value
+      stream->type = REPACK_STREAM;
+      // remove the 'target' FTAG value
+      if ( ms->mdal->fremovexattr( file->metahandle, 1, TREPACK_TAG_NAME ) ) {
+         LOG( LOG_ERR, "Failed to remove the \"%s\" xattr from repacked file \"%s\"\n", stream->finfo.path );
+         ms->mdal->destroyctxt( ctxt );
+         free( rmarkstr );
+         free( origrefpath );
+         ms->mdal->close(file->metahandle);
+         file->metahandle = NULL; // NULL out this handle, so that we never double close()
+         return -1;
+      }
+      // finally, rename the repack marker over the original location, causing GC to pick it up
+      if ( ms->mdal->renameref( ctxt, rmarkstr, origrefpath ) ) {
+         LOG( LOG_ERR, "Failed to rename repack marker \"%s\" over repacked file \"%s\"\n", rmarkstr, origrefpath );
+         ms->mdal->destroyctxt( ctxt );
+         free( rmarkstr );
+         free( origrefpath );
+         ms->mdal->close(file->metahandle);
+         file->metahandle = NULL; // NULL out this handle, so that we never double close()
+         return -1;
+      }
+      ms->mdal->destroyctxt( ctxt );
+      free( rmarkstr );
+      free( origrefpath );
+   }
+   else {
+      // truncate the file to an appropriate length
+      if (ms->mdal->ftruncate(file->metahandle, file->ftag.availbytes)) {
+         LOG(LOG_ERR, "Failed to truncate file %zu to proper size\n", file->ftag.fileno);
+         ms->mdal->close(file->metahandle);
+         file->metahandle = NULL; // NULL out this handle, so that we never double close()
+         return -1;
+      }
    }
    // set atime/mtime values
    if (ms->mdal->futimens(file->metahandle, file->times)) {
@@ -2034,6 +2466,583 @@ int datastream_open(DATASTREAM* stream, STREAM_TYPE type, const char* path, marf
 }
 
 /**
+ * Open an existing file, by reference path, and associate it with a READ stream
+ * @param DATASTREAM* stream : Reference to an existing READ DATASTREAM;
+ *                             if that ref is NULL a fresh stream will be generated to
+ *                             replace that ref
+ * @param const char* refpath : Reference path of the file to be opened
+ * @param marfs_position* pos : Reference to the marfs_position value of the target file
+ * @return int : Zero on success, or -1 on failure
+ *    NOTE -- In most failure conditions, any previous DATASTREAM reference will be
+ *            preserved ( continue to reference whatever file they previously referenced ).
+ *            However, it is possible for certain catastrophic error conditions to occur.
+ *            In such a case, the DATASTREAM will be destroyed, the 'stream' reference set
+ *            to NULL, and errno set to EBADFD.
+ */
+int datastream_scan(DATASTREAM* stream, const char* refpath, marfs_position* pos) {
+   // check for invalid args
+   if (refpath == NULL) {
+      LOG(LOG_ERR, "Received a NULL path argument\n");
+      errno = EINVAL;
+      return -1;
+   }
+   // check for a NULL position
+   if (pos == NULL) {
+      LOG(LOG_ERR, "Received a NULL position argument\n");
+      errno = EINVAL;
+      return -1;
+   }
+   // check for NULL stream reference
+   if (stream == NULL) {
+      LOG(LOG_ERR, "Received a NULL stream reference argument\n");
+      errno = EINVAL;
+      return -1;
+   }
+   char closestream = 0;
+   DATASTREAM newstream = *stream;
+   // check if we've been passed an existing stream
+   if (newstream) {
+      if (newstream->type != READ_STREAM) {
+         LOG(LOG_ERR, "Received stream does not match requested STREAM_TYPE\n");
+         errno = EINVAL;
+         return -1;
+      }
+      STREAMFILE* curfile = newstream->files + newstream->curfile;
+      if (newstream->ns != pos->ns) {
+         // stream MUST match in NS
+         LOG(LOG_INFO, "Received datastream has different NS target: \"%s\"\n",
+            newstream->ns->idstr);
+         closestream = 1;
+         newstream = NULL; // so stream generation logic kicks in
+      }
+      else {
+         // we're going to continue using the provided READ stream structure
+         MDAL mdal = newstream->ns->prepo->metascheme.mdal;
+         newstream->curfile++; // progress to the next file
+         // attempt to open the new file target
+         size_t origobjno = newstream->objno; // remember original object number
+         int openres = open_existing_file(newstream, refpath, 1, pos->ctxt);
+         if (openres) {
+            LOG(LOG_ERR, "Failed to open target file: \"%s\"\n", refpath);
+            newstream->curfile--; // reset back to our old position
+            if (errno == EBADFD) {
+               errno = ENOMSG;
+            }
+            return -1;
+         }
+         STREAMFILE* newfile = newstream->files + newstream->curfile;
+         // check if our old stream targets the same object
+         if (strcmp(curfile->ftag.streamid, newfile->ftag.streamid) ||
+            strcmp(curfile->ftag.ctag, newfile->ftag.ctag) ||
+            origobjno != newfile->ftag.objno) {
+            // data objects differ, so close the old reference
+            FTAG oldftag = curfile->ftag;
+            oldftag.objno = origobjno;
+            if (close_current_obj(newstream, &(oldftag), pos->ctxt)) {
+               // NOTE -- this doesn't necessarily have to be a fatal error on read.
+               //         However, I really don't want us to ignore this sort of thing,
+               //         as it could indicate imminent data loss ( corrupt object which
+               //         we are now failing to tag ).  So... maybe better to fail
+               //         catastrophically.
+               LOG(LOG_ERR, "Failed to close old stream data handle\n");
+               free(curfile->ftag.ctag);
+               free(curfile->ftag.streamid);
+               freestream(newstream);
+               *stream = NULL;
+               errno = EBADFD;
+               return -1;
+            }
+         }
+         else {
+            LOG(LOG_INFO, "Seeking to %zu of existing object handle\n",
+               newfile->ftag.offset);
+            if (ne_seek(newstream->datahandle, newfile->ftag.offset) != newfile->ftag.offset) {
+               LOG(LOG_ERR, "Failed to seek to %zu of existing object handle\n",
+                  newfile->ftag.offset);
+               free(curfile->ftag.ctag);
+               free(curfile->ftag.streamid);
+               freestream(newstream);
+               *stream = NULL;
+               errno = EBADFD;
+               return -1;
+            }
+         }
+         // cleanup our old file reference
+         free(curfile->ftag.ctag);
+         free(curfile->ftag.streamid);
+         if (mdal->close(curfile->metahandle)) {
+            // this has no effect on data integrity, so just complain
+            LOG(LOG_WARNING, "Failed to close metahandle of old stream file\n");
+         }
+         curfile->metahandle = NULL;
+         // move the new file reference to the first position
+         *curfile = *newfile;
+         // clean out the old reference location (probably unnecessary)
+         newfile->metahandle = NULL;
+         newfile->ftag.ctag = NULL;
+         newfile->ftag.streamid = NULL;
+         newstream->curfile--; // abandon the old reference location
+      }
+   }
+   if (newstream == NULL) { // NOTE -- recheck, so as to catch if the prev stream was closed
+      // we need to generate a fresh stream structure
+      newstream = genstream(READ_STREAM, refpath, 1, pos, 0, NULL, NULL);
+   }
+   // check if we need to close the previous stream
+   if (closestream) {
+      if (datastream_release(stream)) {
+         LOG(LOG_ERR, "Failed to release previous datastream\n");
+         *stream = NULL; // don't attempt to close the original stream again
+         if (newstream) {
+            freestream(newstream);
+         } // get rid of our new stream as well
+         errno = EBADFD;
+         return -1;
+      }
+   }
+   // finally, check to ensure we at least have a valid stream to return
+   if (newstream == NULL) {
+      // still NULL means failure of genstream()
+      LOG(LOG_ERR, "Failed to generate new stream\n");
+      return -1;
+   }
+   // update the external stream reference
+   *stream = newstream;
+
+   return 0;
+}
+
+/**
+ * Open a REPACK stream for rewriting the file's contents as a new set of data objects
+ * NOTE -- Until this stream is either closed or progressed ( via a repeated call to this func w/ the same stream arg ),
+ *         any READ stream opened against the target file will be able to read the original file content.
+ * NOTE -- To properly preserve all file times possible ( atime espc. ), this is the expected repacking workflow:
+ *         datastream_repack( repackstream, "tgtfile", pos ) -- open a repack stream for the file
+ *         datastream_scan( readstream, "tgtfile", pos ) -- open a read stream for the same file
+ *         datastream_read( readstream )  AND
+ *           datastream_write( repackstream ) -- duplicate all file content into repackstream
+ *         datastream_release( readstream )  OR
+ *           datastream_scan( readstream, ... ) -- terminate or progress readstream
+ *         datastream_close( repackstream )  OR
+ *           datastream_repack( repackstream, ... ) -- terminate or progress repackstream
+ * @param DATASTREAM* stream : Reference to an existing REPACK DATASTREAM;
+ *                             if that stream is NULL a fresh stream will be generated to replace it
+ * @param const char* refpath : Reference path of the file to be repacked
+ * @param marfs_position* pos : Reference to the marfs_position value of the target file
+ * @param const char* ctag : Client tag to be associated with this stream
+ * @return int : Zero on success, or -1 on failure
+ *    NOTE -- In most failure conditions, any previous DATASTREAM reference will be
+ *            preserved ( continue to reference whatever file they previously referenced ).
+ *            However, it is possible for certain catastrophic error conditions to occur.
+ *            In such a case, the DATASTREAM will be destroyed, the 'stream' reference set
+ *            to NULL, and errno set to EBADFD.
+ */
+int datastream_repack(DATASTREAM* stream, const char* refpath, marfs_position* pos, const char* ctag) {
+   // check for a NULL path arg
+   if (refpath == NULL) {
+      LOG(LOG_ERR, "Received a NULL refpath argument\n");
+      errno = EINVAL;
+      return -1;
+   }
+   // check for a NULL position
+   if (pos == NULL) {
+      LOG(LOG_ERR, "Received a NULL position argument\n");
+      errno = EINVAL;
+      return -1;
+   }
+   // check for NULL stream reference
+   if (stream == NULL) {
+      LOG(LOG_ERR, "Received a NULL stream reference argument\n");
+      errno = EINVAL;
+      return -1;
+   }
+   char closestream = 0;
+   DATASTREAM newstream = *stream;
+   // check if we've been passed an existing stream
+   if (newstream) {
+      if (newstream->type != REPACK_STREAM) {
+         LOG(LOG_ERR, "Received non-CREATE stream\n");
+         errno = EINVAL;
+         return -1;
+      }
+      if (newstream->ns != pos->ns) {
+         LOG(LOG_INFO, "Received datastream has different NS target: \"%s\"\n",
+            newstream->ns->idstr);
+         // can't continue with a stream from a previous NS
+         closestream = 1;
+         newstream = NULL; // so that stream generation logic kicks in later
+      }
+      else {
+         // we're going to continue using the provided stream structure
+         size_t curobj = newstream->objno;
+         // finalize the current file
+         if (finfile(newstream)) {
+            LOG(LOG_ERR, "Failed to finalize previous stream file\n");
+            freestream(newstream);
+            *stream = NULL; // unsafe to reuse this stream
+            errno = EBADFD;
+            return -1;
+         }
+         // progress to the next file
+         newstream->curfile++;
+         newstream->fileno++;
+         // create the new file
+         if (open_repack_file(newstream, refpath, pos->ctxt)) {
+            LOG(LOG_ERR, "Failed to repack new file: \"%s\"\n", refpath);
+            // roll back our stream changes
+            newstream->curfile--;
+            newstream->fileno--;
+            if (errno == EBADFD) {
+               errno = ENOMSG;
+            } // avoid using our reserved errno value
+            return -1;
+         }
+         // check for an object transition
+         STREAMFILE* newfile = newstream->files + newstream->curfile;
+         if (newfile->ftag.objno != curobj) {
+            size_t newfilepos = newstream->curfile;
+            LOG(LOG_INFO, "Stream has transitioned from objno %zu to %zu\n",
+               curobj, newfile->ftag.objno);
+            // close our data handle
+            FTAG oldftag = (newfile - 1)->ftag;
+            oldftag.objno = curobj;
+            if (close_current_obj(newstream, &(oldftag), pos->ctxt)) {
+               LOG(LOG_ERR, "Failure to close data object %zu\n", curobj);
+               freestream(newstream);
+               *stream = NULL; // unsafe to reuse this stream
+               errno = EBADFD;
+               return -1;
+            }
+            // we need to mark all previous files as complete
+            char abortflag = 0;
+            while (newstream->curfile) {
+               newstream->curfile--;
+               if (completefile(newstream, newstream->files + newstream->curfile)) {
+                  LOG(LOG_ERR, "Failed to complete file %zu\n",
+                     (newstream->files + newstream->curfile)->ftag.fileno);
+                  abortflag = 1;
+               }
+            }
+            // shift the new file reference to the front of the list
+            newstream->files[0] = newstream->files[newfilepos];
+            // check for any errors
+            if (abortflag) {
+               LOG(LOG_INFO, "Terminating datastream due to previous errors\n");
+               freestream(newstream);
+               *stream = NULL; // unsafe to reuse this stream
+               errno = EBADFD;
+               return -1;
+            }
+         }
+         else {
+            // at least need to push out the 'FINALIZED' state of the previous file
+            if (putftag(newstream, newstream->files + (newstream->curfile - 1))) {
+               LOG(LOG_ERR, "Failed to push the FINALIZED FTAG for the previous file\n");
+               freestream(newstream);
+               *stream = NULL; // unsafe to reuse this stream
+               errno = EBADFD;
+               return -1;
+            }
+         }
+      }
+   }
+   if (newstream == NULL) { // recheck, so as to catch if the prev stream was abandoned
+      // we need to generate a fresh stream structure
+      newstream = genstream(REPACK_STREAM, refpath, 1, pos, 0, ctag, NULL);
+   }
+   // check if we need to close the previous stream
+   if (closestream) {
+      if (datastream_close(stream)) {
+         LOG(LOG_ERR, "Failed to close previous datastream\n");
+         *stream = NULL; // don't attempt to close the original stream again
+         if (newstream) {
+            freestream(newstream);
+         } // get rid of our new stream as well
+         errno = EBADFD;
+         return -1;
+      }
+   }
+   // finally, check to ensure we at least have a valid stream to return
+   if (newstream == NULL) {
+      // still NULL means failure of genstream()
+      LOG(LOG_ERR, "Failed to generate new stream\n");
+      return -1;
+   }
+   // update the external stream reference
+   *stream = newstream;
+
+   return 0;
+}
+
+/**
+ * Cleans up state from a previous repack operation
+ * NOTE -- This should only be necessary for a repack operation left in an incomplete state.
+ * @param const char* refpath : Reference path of the repack marker file for the previous operation
+ * @param marfs_position* pos : Reference to the marfs_position value of the target file
+ * @return int : Zero on successful cleanup, or -1 on failure
+ */
+int datastream_repack_cleanup(const char* refpath, marfs_position* pos) {
+   // check for invalid args
+   if ( refpath == NULL ) {
+      LOG( LOG_ERR, "Received a NULL refpath argument\n" );
+      errno = EINVAL;
+      return -1;
+   }
+   if ( pos == NULL  ||  pos->ctxt == NULL  ||  pos->ns == NULL ) {
+      LOG( LOG_ERR, "Received an invalid position argument\n" );
+      errno = EINVAL;
+      return -1;
+   }
+   // shorthand refs
+   marfs_ms* ms = &(pos->ns->prepo->metascheme);
+   // stat the repack marker to stash time values
+   struct stat stval;
+   if ( ms->mdal->statref( pos->ctxt, refpath, &(stval) ) ) {
+      LOG( LOG_ERR, "Failed to stat repack marker file: \"%s\"\n", refpath );
+      return -1;
+   }
+   // open the repack marker file
+   MDAL_FHANDLE rmarker = ms->mdal->openref( pos->ctxt, refpath, O_RDWR, 0 );
+   if ( rmarker == NULL ) {
+      LOG( LOG_ERR, "Failed to open repack marker target: \"%s\"\n", refpath );
+      return -1;
+   }
+   // retrieve the 'target' FTAG value
+   FTAG tgtftag;
+   ssize_t tgtftagstrlen = ms->mdal->fgetxattr( rmarker, 1, TREPACK_TAG_NAME, NULL, 0 );
+   if ( tgtftagstrlen < 0 ) {
+      if ( errno != ENODATA ) {
+         LOG( LOG_ERR, "Failed to retrieve \"%s\" value from repack marker \"%s\"\n", TREPACK_TAG_NAME, refpath );
+         ms->mdal->close( rmarker );
+         return -1;
+      }
+      // no 'target' value means the repack barely got anywhere, so just delete the marker
+      ms->mdal->close( rmarker );
+      if ( ms->mdal->unlinkref( pos->ctxt, refpath ) ) {
+         LOG( LOG_ERR, "Failed to unlink repack marker \"%s\"\n", refpath );
+         return -1;
+      }
+      return 0; // all done
+   }
+   char* tgtftagstr = malloc( sizeof(char) * (tgtftagstrlen + 21) ); // leave extra space ( so we can maybe reuse )
+   if ( tgtftagstr == NULL ) {
+      LOG( LOG_ERR, "Failed to allocate tgtftagstr of size %zd\n", tgtftagstrlen + 1 );
+      ms->mdal->close( rmarker );
+      return -1;
+   }
+   if ( ms->mdal->fgetxattr( rmarker, 1, TREPACK_TAG_NAME, tgtftagstr, tgtftagstrlen ) != tgtftagstrlen ) {
+      LOG( LOG_ERR, "\"%s\" value of repack marker \"%s\" has inconsistent length\n", TREPACK_TAG_NAME, refpath );
+      free( tgtftagstr );
+      ms->mdal->close( rmarker );
+      return -1;
+   }
+   *(tgtftagstr + tgtftagstrlen) = '\0'; // ensure a NULL-terminated string
+   if ( ftag_initstr( &(tgtftag), tgtftagstr ) ) {
+      LOG( LOG_ERR, "Failed to parse \"%s\" value of repack marker \"%s\"\n", TREPACK_TAG_NAME, refpath );
+      free( tgtftagstr );
+      ms->mdal->close( rmarker );
+      return -1;
+   }
+   // identify and open the repack target file
+   char* repacktgtpath = datastream_genrpath( &(tgtftag), ms );
+   if ( repacktgtpath == NULL ) {
+      LOG( LOG_ERR, "Failed to identify repack tgt path of repack marker \"%s\"\n", refpath );
+      free( tgtftagstr );
+      free( tgtftag.ctag );
+      free( tgtftag.streamid );
+      ms->mdal->close( rmarker );
+      return -1;
+   }
+   free( tgtftag.ctag );
+   free( tgtftag.streamid );
+   MDAL_FHANDLE tgtfile = ms->mdal->openref( pos->ctxt, repacktgtpath, O_RDWR, 0 );
+   if ( tgtfile == NULL ) {
+      if ( errno == ENOENT ) {
+         // absence of the target means it should be safe to simply delete the repack marker
+         free( repacktgtpath );
+         free( tgtftagstr );
+         ms->mdal->close( rmarker );
+         if ( ms->mdal->unlinkref( pos->ctxt, refpath ) ) {
+            LOG( LOG_ERR, "Failed to unlink repack marker \"%s\"\n", refpath );
+            return -1;
+         }
+         return 0; // all done
+      }
+      LOG( LOG_ERR, "Failed to open repack target path: \"%s\"\n", repacktgtpath );
+      free( repacktgtpath );
+      free( tgtftagstr );
+      ms->mdal->close( rmarker );
+      return -1;
+   }
+   // retrieve 'tgt' FTAG value from the tgt file
+   char activetgtpresent = 0;
+   ssize_t activetgtftagstrlen = ms->mdal->fgetxattr( tgtfile, 1, TREPACK_TAG_NAME, NULL, 0 );
+   if ( activetgtftagstrlen < 1  &&  errno != ENODATA ) {
+      LOG( LOG_ERR, "Failed to retrieve \"%s\" value from \"%s\"\n", TREPACK_TAG_NAME, repacktgtpath );
+      ms->mdal->close( tgtfile );
+      free( tgtftagstr );
+      free( repacktgtpath );
+      ms->mdal->close( rmarker );
+      return -1;
+   }
+   else if ( activetgtftagstrlen > 0 ) {
+      activetgtpresent = 1;
+      if ( activetgtftagstrlen > tgtftagstrlen + 20 ) {
+         // expand our tgtftag string, if necessary
+         char* newtgtftagstr = realloc( tgtftagstr, activetgtftagstrlen + 1 );
+         if ( newtgtftagstr == NULL ) {
+            LOG( LOG_ERR, "Failed to allocate %zd bytes for \"%s\" value of file \"%s\"\n",
+                 activetgtftagstrlen + 1, TREPACK_TAG_NAME, repacktgtpath );
+            ms->mdal->close( tgtfile );
+            free( tgtftagstr );
+            free( repacktgtpath );
+            ms->mdal->close( rmarker );
+            return -1;
+         }
+         tgtftagstr = newtgtftagstr;
+      }
+      tgtftagstrlen = activetgtftagstrlen;
+      if ( ms->mdal->fgetxattr( tgtfile, 1, TREPACK_TAG_NAME, tgtftagstr, tgtftagstrlen ) != tgtftagstrlen ) {
+         LOG( LOG_ERR, "\"%s\" value of \"%s\" has an inconsistent length\n", TREPACK_TAG_NAME, repacktgtpath );
+         ms->mdal->close( tgtfile );
+         free( tgtftagstr );
+         free( repacktgtpath );
+         ms->mdal->close( rmarker );
+         return -1;
+      }
+   }
+   // now check for a real FTAG value
+   char* renametgt = NULL;
+   ssize_t realftagstrlen = ms->mdal->fgetxattr( rmarker, 1, FTAG_NAME, NULL, 0 );
+   if ( realftagstrlen < 0  &&  errno == ENODATA ) {
+      // no active FTAG value means we'll be renamed over the target postion
+      renametgt = repacktgtpath;
+      repacktgtpath = NULL;
+      if ( activetgtpresent ) {
+         // overwrite our marker's tgt FTAG with that of the active file (if present)
+         // NOTE -- this is to save us if the program dies within the next couple of operations, allowing
+         //         us to pick up this value again
+         if ( ms->mdal->fsetxattr( rmarker, 1, TREPACK_TAG_NAME, tgtftagstr, tgtftagstrlen, XATTR_REPLACE ) ) {
+         }
+         // remove the tgt FTAG from the active file (if present)
+         // NOTE -- this is to save us if this program dies before the actual rename, as it will trigger the 
+         //         'existing FTAG' path and we don't want to replace the tgt file's active FTAG
+         if ( ms->mdal->fremovexattr( tgtfile, 1, TREPACK_TAG_NAME ) ) {
+         }
+      }
+      // set the marker's real FTAG to the same value, or to the marker's value ( if the tgt file didn't have it )
+      if ( ms->mdal->fsetxattr( rmarker, 1, FTAG_NAME, tgtftagstr, tgtftagstrlen, XATTR_CREATE ) ) {
+      }
+   }
+   else if ( realftagstrlen > 0 ) {
+      // existing FTAG value means the marker was about to be renamed, so we need to identify that target
+      free( repacktgtpath ); // shouldn't need this path any more
+      char* realftagstr = malloc( sizeof(char) * (realftagstrlen + 1) );
+      if ( realftagstr == NULL ) {
+         LOG( LOG_ERR, "Failed to allocate space for existing marker FTAG string of length %zd\n", realftagstrlen + 1 );
+         ms->mdal->close( tgtfile );
+         free( tgtftagstr );
+         ms->mdal->close( rmarker );
+         return -1;
+      }
+      if ( ms->mdal->fgetxattr( rmarker, 1, FTAG_NAME, realftagstr, realftagstrlen ) != realftagstrlen ) {
+         LOG( LOG_ERR, "FTAG of rebuild marker \"%s\" has inconsistent length\n", refpath );
+         free( realftagstr );
+         ms->mdal->close( tgtfile );
+         free( tgtftagstr );
+         ms->mdal->close( rmarker );
+         return -1;
+      }
+      FTAG realftag;
+      if ( ftag_initstr( &(realftag), realftagstr ) ) {
+         LOG( LOG_ERR, "FTAG of rebuild marker \"%s\" could not be parsed\n", refpath );
+         free( realftagstr );
+         ms->mdal->close( tgtfile );
+         free( tgtftagstr );
+         ms->mdal->close( rmarker );
+         return -1;
+      }
+      free( realftagstr );
+      ssize_t renamestrlen = ftag_metatgt( &(realftag), NULL, 0 );
+      if ( renamestrlen < 1 ) {
+         LOG( LOG_ERR, "FTAG of rebuild marker \"%s\" could not be parsed\n", refpath );
+         free( realftag.ctag );
+         free( realftag.streamid );
+         ms->mdal->close( tgtfile );
+         free( tgtftagstr );
+         ms->mdal->close( rmarker );
+         return -1;
+      }
+      renametgt = malloc( sizeof(char) * (renamestrlen + 1) );
+      if ( renametgt == NULL ) {
+         LOG( LOG_ERR, "Failed to allocate space for rename tgt string of length %zd\n", renamestrlen + 1 );
+         free( realftag.ctag );
+         free( realftag.streamid );
+         ms->mdal->close( tgtfile );
+         free( tgtftagstr );
+         ms->mdal->close( rmarker );
+         return -1;
+      }
+      if ( ftag_metatgt( &(realftag), renametgt, renamestrlen + 1 ) != renamestrlen ) {
+         LOG( LOG_ERR, "Rename tgt of rebuild marker \"%s\" has an inconsistent length\n", refpath );
+         free( renametgt );
+         free( realftag.ctag );
+         free( realftag.streamid );
+         ms->mdal->close( tgtfile );
+         free( tgtftagstr );
+         ms->mdal->close( rmarker );
+         return -1;
+      }
+      free( realftag.ctag );
+      free( realftag.streamid );
+      if ( activetgtpresent ) {
+         // copy the active file's tgt FTAG over the real FTAG (if present)
+         if ( ms->mdal->fsetxattr( tgtfile, 1, FTAG_NAME, tgtftagstr, tgtftagstrlen, XATTR_REPLACE ) ) {
+            LOG( LOG_ERR, "Failed to update active FTAG of target file\n" );
+            free( renametgt );
+            ms->mdal->close( tgtfile );
+            free( tgtftagstr );
+            ms->mdal->close( rmarker );
+            return -1;
+         }
+         // remove the tgt FTAG from the active file (if present)
+         if ( ms->mdal->fremovexattr( tgtfile, 1, TREPACK_TAG_NAME ) ) {
+            LOG( LOG_ERR, "Failed to remove \"%s\" value of target file\n", TREPACK_TAG_NAME );
+            free( renametgt );
+            ms->mdal->close( tgtfile );
+            free( tgtftagstr );
+            ms->mdal->close( rmarker );
+            return -1;
+         }
+      }
+   }
+   else {
+      // some miscellaneous failure
+      LOG( LOG_ERR, "Failed to determine if an active FTAG value is attached to repack marker \"%s\"\n", refpath );
+      ms->mdal->close( tgtfile );
+      free( tgtftagstr );
+      free( repacktgtpath );
+      ms->mdal->close( rmarker );
+      return -1;
+   }
+   free( tgtftagstr );
+   // close outstanding handles
+   if ( ms->mdal->close( tgtfile )  ||  ms->mdal->close( rmarker ) ) {
+      LOG( LOG_ERR, "Failed to close outstanding file handles\n" );
+      free( renametgt );
+      return -1;
+   }
+   // FINALLY, rename the repack marker over our designated tgt
+   if ( ms->mdal->renameref( pos->ctxt, refpath, renametgt ) ) {
+      LOG( LOG_ERR, "Failed to rename repack marker \"%s\" over \"%s\"\n", refpath, renametgt );
+      free( renametgt );
+      return -1;
+   }
+   free( renametgt );
+   return 0;
+}
+
+/**
  * Release the given DATASTREAM ( close the stream without completing the referenced file )
  * @param DATASTREAM* stream : Reference to the DATASTREAM to be released
  * @return int : Zero on success, or -1 on failure
@@ -2048,6 +3057,7 @@ int datastream_release(DATASTREAM* stream) {
    DATASTREAM tgtstream = *stream;
    if (tgtstream->type != EDIT_STREAM &&
       tgtstream->type != CREATE_STREAM &&
+      tgtstream->type != REPACK_STREAM &&
       tgtstream->type != READ_STREAM) {
       LOG(LOG_ERR, "Received STREAM_TYPE is unsupported\n");
       errno = EINVAL;
@@ -2057,7 +3067,7 @@ int datastream_release(DATASTREAM* stream) {
    const marfs_ms* ms = &(tgtstream->ns->prepo->metascheme);
    STREAMFILE* curfile = tgtstream->files + tgtstream->curfile;
    // create/edit streams require extra attention
-   if (tgtstream->type == CREATE_STREAM) {
+   if (tgtstream->type == CREATE_STREAM  ||  tgtstream->type == REPACK_STREAM) {
       // make sure we're releasing a file that actually got extended
       if (!(curfile->ftag.state & FTAG_WRITEABLE) || tgtstream->curfile) {
          LOG(LOG_ERR, "Cannot release non-extended file reference\n");
@@ -2095,13 +3105,14 @@ int datastream_release(DATASTREAM* stream) {
       abortflag = 1;
    }
    // for create streams, update the ftag to a finalizd state
-   else if (tgtstream->type == CREATE_STREAM && putftag(tgtstream, curfile)) {
+   else if ((tgtstream->type == CREATE_STREAM  ||  tgtstream->type == REPACK_STREAM) &&
+            putftag(tgtstream, curfile)) {
       LOG(LOG_ERR, "Failed to update FTAG of file %zu\n", curfile->ftag.fileno);
       abortflag = 1;
    }
    // if this is a create stream OR if utimens was called, set atime/mtime values
-   else if ((tgtstream->type == CREATE_STREAM || curfile->dotimes) &&
-      ms->mdal->futimens(curfile->metahandle, curfile->times)) {
+   else if ((tgtstream->type == CREATE_STREAM  ||  tgtstream->type == REPACK_STREAM || curfile->dotimes) &&
+            ms->mdal->futimens(curfile->metahandle, curfile->times)) {
       LOG(LOG_ERR, "Failed to update time values on file %zu\n", curfile->ftag.fileno);
       abortflag = 1;
    }
@@ -2134,6 +3145,7 @@ int datastream_close(DATASTREAM* stream) {
    DATASTREAM tgtstream = *stream;
    if (tgtstream->type != EDIT_STREAM &&
       tgtstream->type != CREATE_STREAM &&
+      tgtstream->type != REPACK_STREAM &&
       tgtstream->type != READ_STREAM) {
       LOG(LOG_ERR, "Received STREAM_TYPE is unsupported\n");
       errno = EINVAL;
@@ -2142,7 +3154,7 @@ int datastream_close(DATASTREAM* stream) {
    // shorthand references
    STREAMFILE* curfile = tgtstream->files + tgtstream->curfile;
    // create/edit streams require extra attention
-   if (tgtstream->type == CREATE_STREAM) {
+   if (tgtstream->type == CREATE_STREAM  ||  tgtstream->type == REPACK_STREAM) {
       // make sure we're closing a file that did not get extended
       if (curfile->ftag.state & FTAG_WRITEABLE) {
          LOG(LOG_ERR, "Cannot close extended file reference\n");
@@ -2373,7 +3385,7 @@ ssize_t datastream_write(DATASTREAM* stream, const void* buf, size_t count) {
       return -1;
    }
    DATASTREAM tgtstream = *stream;
-   if (tgtstream->type != CREATE_STREAM && tgtstream->type != EDIT_STREAM) {
+   if (tgtstream->type != CREATE_STREAM && tgtstream->type != EDIT_STREAM  &&  tgtstream->type != REPACK_STREAM) {
       LOG(LOG_ERR, "Provided stream does not support writing\n");
       errno = EINVAL;
       return -1;
@@ -2385,7 +3397,7 @@ ssize_t datastream_write(DATASTREAM* stream, const void* buf, size_t count) {
    }
    // check for FTAG states that prohibit writing
    STREAMFILE* curfile = tgtstream->files + tgtstream->curfile;
-   if (tgtstream->type == CREATE_STREAM) {
+   if (tgtstream->type == CREATE_STREAM  ||  tgtstream->type == REPACK_STREAM) {
       if ((curfile->ftag.state & FTAG_DATASTATE) >= FTAG_FIN) {
          LOG(LOG_ERR, "Provided create stream references a finalized file\n");
          errno = EINVAL;
@@ -2449,7 +3461,7 @@ ssize_t datastream_write(DATASTREAM* stream, const void* buf, size_t count) {
             return -1;
          }
          // we (may) need to mark all previous files as complete
-         if (tgtstream->type == CREATE_STREAM) {
+         if (tgtstream->type == CREATE_STREAM  ||  tgtstream->type == REPACK_STREAM) {
             size_t curfilepos = tgtstream->curfile;
             char abortflag = 0;
             while (tgtstream->curfile) {
@@ -2503,7 +3515,7 @@ ssize_t datastream_write(DATASTREAM* stream, const void* buf, size_t count) {
       count -= writeres;
       writtenbytes += writeres;
       tgtstream->offset += writeres;
-      if (tgtstream->type == CREATE_STREAM) {
+      if (tgtstream->type == CREATE_STREAM  ||  tgtstream->type == REPACK_STREAM) {
          // for create streams, increase the actual file data size
          curfile->ftag.bytes += writeres;
       }
@@ -2540,17 +3552,17 @@ int datastream_setrecoverypath(DATASTREAM* stream, const char* recovpath) {
    }
    // check if this stream is of an appropriate type
    DATASTREAM tgtstream = *stream;
-   if (tgtstream->type != CREATE_STREAM && tgtstream->type != EDIT_STREAM) {
+   if (tgtstream->type != CREATE_STREAM && tgtstream->type != EDIT_STREAM  &&  tgtstream->type != REPACK_STREAM) {
       LOG(LOG_ERR, "Received stream type is not supported\n");
       errno = EINVAL;
       return -1;
    }
    // perform stream->type specific check
    STREAMFILE* curfile = tgtstream->files + tgtstream->curfile;
-   if (tgtstream->type == CREATE_STREAM) {
+   if (tgtstream->type == CREATE_STREAM  ||  tgtstream->type == REPACK_STREAM) {
       // cannot adjust recovery path after we've started laying out data ( write or extend )
       if (curfile->ftag.bytes) {
-         LOG(LOG_ERR, "Received CREATE stream already has associated data\n");
+         LOG(LOG_ERR, "Received CREATE/REPACK stream already has associated data\n");
          errno = EINVAL;
          return -1;
       }
@@ -2636,7 +3648,7 @@ off_t datastream_seek(DATASTREAM* stream, off_t offset, int whence) {
       return -1;
    }
    // CREATE streams are treated differently
-   if (tgtstream->type == CREATE_STREAM) {
+   if (tgtstream->type == CREATE_STREAM  ||  tgtstream->type == REPACK_STREAM) {
       // check for reverse seek
       if (streampos.totaloffset < curfile->ftag.bytes) {
          LOG(LOG_ERR, "Cannot reverse seek CREATE stream to target offset: %zu\n",
