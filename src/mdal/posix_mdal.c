@@ -106,6 +106,7 @@ typedef struct posixmdal_file_handle_struct {
 typedef struct posix_mdal_context_struct {
    int refd;   // Dir handle for NS ref tree ( or the secure root, if NS hasn't been set )
    int pathd;  // Dir handle of the user tree for the current NS ( or -1, if NS hasn't been set )
+   dev_t dev;  // Device ID value associated with this context ( try to avoid accessing a non-marfs path )
 }* POSIX_MDAL_CTXT;
    
 
@@ -314,6 +315,7 @@ MDAL_CTXT posixmdal_dupctxt ( const MDAL_CTXT ctxt ) {
       free( dupctxt );
       return NULL;
    }
+   dupctxt->dev = pctxt->dev;
    return (MDAL_CTXT) dupctxt;
 }
 
@@ -333,7 +335,7 @@ int posixmdal_cleanup( MDAL mdal ) {
       return -1;
    }
    // destroy the MDAL_CTXT struct
-	int retval = 0;
+   int retval = 0;
    if ( posixmdal_destroyctxt( mdal->ctxt ) ) {
       LOG( LOG_ERR, "Failed to destroy the MDAL_CTXT reference\n" );
       retval = -1;
@@ -359,92 +361,92 @@ int posixmdal_checksec( const MDAL_CTXT ctxt, char fix ) {
       return -1;
    }
    POSIX_MDAL_CTXT pctxt = (POSIX_MDAL_CTXT) ctxt;
-	// verify that this CTXT doesn't have a NS target
-	if ( pctxt->pathd >= 0 ) {
-		LOG( LOG_ERR, "Cannot verify the security of a CTXT after it has been associated with a NS target\n" );
-		errno = EINVAL;
-		return -1;
-	}
-	// stat the CTXT root dir
-	struct stat pstat;
-	if ( fstatat( pctxt->refd, ".", &pstat, 0 ) ) {
-		LOG( LOG_ERR, "Failed to stat the root dir of the given MDAL_CTXT\n" );
-		return -1;
-	}
-	// set up our parent string
-	size_t stralloc = 1024;
-	char* parentstr = calloc( 1, stralloc );
-	if ( parentstr == NULL ) {
-		LOG( LOG_ERR, "Failed to allocate space for parent dir string\n" );
-		return -1;
-	}
-	size_t pstrlen = 0;
-	// iterate up from the CTXT root dir, potentially to the FS root
-	char foundsecdir = 0;
-	dev_t prevdev = pstat.st_dev;
-	ino_t previno = pstat.st_ino;
-	uid_t uid = geteuid();
-	gid_t gid = getegid();
-	while ( !(foundsecdir) ) {
-		// if necessary, expand our string allocation
-		if ( pstrlen + 4 > stralloc ) {
-			char* newparentstr = realloc( parentstr, stralloc + 1024 );
-			if ( newparentstr == NULL ) {
-				LOG( LOG_ERR, "Failed to extend parent string to an allocation of %zu bytes\n", stralloc + 1024 );
-				free( parentstr );
-				return -1;
-			}
-			parentstr = newparentstr;
-			stralloc += 1024;
-		}
-		// extend our string to the next parent reference
-		if ( snprintf( parentstr + pstrlen, stralloc - pstrlen, "../" ) != 3 ) {
-			LOG( LOG_ERR, "Unexpected length of parent string: \"%s\"\n", parentstr );
-			free( parentstr );
-			errno = EDOM;
-			return -1;
-		}
-		pstrlen += 3;
-		// stat the next parent dir
-		if ( fstatat( pctxt->refd, parentstr, &pstat, 0 ) ) {
-			LOG( LOG_ERR, "Failed to stat parent dir: \"%s\"\n", parentstr );
-			free( parentstr );
-			return -1;
-		}
-		// check if we have hit the FS root
-		if ( pstat.st_dev == prevdev  &&  pstat.st_ino == previno ) {
-			// abort, if we've gotten this far
-			break;
-		}
+   // verify that this CTXT doesn't have a NS target
+   if ( pctxt->pathd >= 0 ) {
+      LOG( LOG_ERR, "Cannot verify the security of a CTXT after it has been associated with a NS target\n" );
+      errno = EINVAL;
+      return -1;
+   }
+   // stat the CTXT root dir
+   struct stat pstat;
+   if ( fstatat( pctxt->refd, ".", &pstat, 0 ) ) {
+      LOG( LOG_ERR, "Failed to stat the root dir of the given MDAL_CTXT\n" );
+      return -1;
+   }
+   // set up our parent string
+   size_t stralloc = 1024;
+   char* parentstr = calloc( 1, stralloc );
+   if ( parentstr == NULL ) {
+      LOG( LOG_ERR, "Failed to allocate space for parent dir string\n" );
+      return -1;
+   }
+   size_t pstrlen = 0;
+   // iterate up from the CTXT root dir, potentially to the FS root
+   char foundsecdir = 0;
+   dev_t prevdev = pstat.st_dev;
+   ino_t previno = pstat.st_ino;
+   uid_t uid = geteuid();
+   gid_t gid = getegid();
+   while ( !(foundsecdir) ) {
+      // if necessary, expand our string allocation
+      if ( pstrlen + 4 > stralloc ) {
+         char* newparentstr = realloc( parentstr, stralloc + 1024 );
+         if ( newparentstr == NULL ) {
+            LOG( LOG_ERR, "Failed to extend parent string to an allocation of %zu bytes\n", stralloc + 1024 );
+            free( parentstr );
+            return -1;
+         }
+         parentstr = newparentstr;
+         stralloc += 1024;
+      }
+      // extend our string to the next parent reference
+      if ( snprintf( parentstr + pstrlen, stralloc - pstrlen, "../" ) != 3 ) {
+         LOG( LOG_ERR, "Unexpected length of parent string: \"%s\"\n", parentstr );
+         free( parentstr );
+         errno = EDOM;
+         return -1;
+      }
+      pstrlen += 3;
+      // stat the next parent dir
+      if ( fstatat( pctxt->refd, parentstr, &pstat, 0 ) ) {
+         LOG( LOG_ERR, "Failed to stat parent dir: \"%s\"\n", parentstr );
+         free( parentstr );
+         return -1;
+      }
+      // check if we have hit the FS root
+      if ( pstat.st_dev == prevdev  &&  pstat.st_ino == previno ) {
+         // abort, if we've gotten this far
+         break;
+      }
       prevdev = pstat.st_dev;
       previno = pstat.st_ino;
-		// check if this dir has appropriate perms
-		if ( (pstat.st_mode & (S_IRWXG | S_IRWXO)) == 0  &&  pstat.st_uid == uid ) {
-			LOG( LOG_INFO, "Detected that parent dir has appropriate perms: \"%s\"\n", parentstr );
-			foundsecdir = 1;
-		}
-	}
-	free( parentstr ); // regardless of result, done with this string
-	if ( !(foundsecdir) ) {
-		if ( fix ) {
-			// attempt to chown/chmod the direct parent to appropriate perms
-			LOG( LOG_INFO, "Chowning \"..\" to current UID/GID\n" );
-			if ( fchownat( pctxt->refd, "..", uid, gid, 0 ) ) {
-				LOG( LOG_ERR, "Failed to chown \"..\" to current UID/GID\n" );
-				return 1;
-			}
-			LOG( LOG_INFO, "Chmoding \"..\" to 0700 mode\n" );
-			if ( fchmodat( pctxt->refd, "..", 0700, 0 ) ) {
-				LOG( LOG_ERR, "Failed to chmod \"..\" to 0700 mode\n" );
-				return 1;
-			}
-		}
-		else {
-			// just complain
-			return 1;
-		}
-	}
-	return 0;
+      // check if this dir has appropriate perms
+      if ( (pstat.st_mode & (S_IRWXG | S_IRWXO)) == 0  &&  pstat.st_uid == uid ) {
+         LOG( LOG_INFO, "Detected that parent dir has appropriate perms: \"%s\"\n", parentstr );
+         foundsecdir = 1;
+      }
+   }
+   free( parentstr ); // regardless of result, done with this string
+   if ( !(foundsecdir) ) {
+      if ( fix ) {
+         // attempt to chown/chmod the direct parent to appropriate perms
+         LOG( LOG_INFO, "Chowning \"..\" to current UID/GID\n" );
+         if ( fchownat( pctxt->refd, "..", uid, gid, 0 ) ) {
+            LOG( LOG_ERR, "Failed to chown \"..\" to current UID/GID\n" );
+            return 1;
+         }
+         LOG( LOG_INFO, "Chmoding \"..\" to 0700 mode\n" );
+         if ( fchmodat( pctxt->refd, "..", 0700, 0 ) ) {
+            LOG( LOG_ERR, "Failed to chmod \"..\" to 0700 mode\n" );
+            return 1;
+         }
+      }
+      else {
+         // just complain
+         return 1;
+      }
+   }
+   return 0;
 }
 
 
@@ -517,6 +519,14 @@ int posixmdal_setnamespace( MDAL_CTXT ctxt, const char* ns ) {
       close( newpath );
       return -1;
    }
+   // stat the reference dir to generate a new dev value
+   struct stat stval;
+   if ( fstat( newref, &(stval) ) ) {
+      LOG( LOG_ERR, "Failed to stat reference dir of NS \"%s\"\n", ns );
+      close( newref );
+      close( newpath );
+      return -1;
+   }
    // close the previous path dir, if set
    if ( pctxt->pathd >= 0  &&  close( pctxt->pathd ) ) {
       LOG( LOG_WARNING, "Failed to close the previous path dir handle\n" );
@@ -527,6 +537,7 @@ int posixmdal_setnamespace( MDAL_CTXT ctxt, const char* ns ) {
       LOG( LOG_WARNING, "Failed to close the previous ref dir handle\n" );
    }
    pctxt->refd = newref; // update the context structure
+   pctxt->dev = stval.st_dev;
    return 0;
 }
 
@@ -540,6 +551,12 @@ MDAL_CTXT posixmdal_newctxt ( const char* ns, const MDAL_CTXT basectxt ) {
    // check for NULL basectxt
    if ( !(basectxt) ) {
       LOG( LOG_ERR, "Received a NULL MDAL_CTXT reference\n" );
+      errno = EINVAL;
+      return NULL;
+   }
+   // check for NULL ns path
+   if ( !(ns) ) {
+      LOG( LOG_ERR, "Received a NULL NS path arg\n" );
       errno = EINVAL;
       return NULL;
    }
@@ -607,6 +624,191 @@ MDAL_CTXT posixmdal_newctxt ( const char* ns, const MDAL_CTXT basectxt ) {
       free( newctxt );
       return NULL;
    }
+   struct stat stval;
+   if ( fstat( newctxt->refd, &(stval) ) ) {
+      LOG( LOG_ERR, "Failed to stat reference dir of NS \"%s\"\n", ns );
+      close( newctxt->refd );
+      close( newctxt->pathd );
+      free( newctxt );
+      return NULL;
+   }
+   newctxt->dev = stval.st_dev;
+   return (MDAL_CTXT) newctxt;
+}
+
+/**
+ * Create a new MDAL_CTXT reference, targeting one NS for user path operations and a different
+ *  NS for reference path creation
+ * @param const char* pathns : Namespace for the new MDAL_CTXT to target for user path ops
+ * @param const MDAL_CTXT pathctxt : The pathns will be interpreted relative to this CTXT
+ * @param const char* refns : Namespace for the new MDAL_CTXT to target for ref path ops
+ * @param const MDAL_CTXT refctxt : The refns will be interpreted relative to this CTXT
+ * @return MDAL_CTXT : Reference to the new MDAL_CTXT, or NULL if an error occurred
+ */
+MDAL_CTXT posixmdal_newsplitctxt ( const char* pathns, const MDAL_CTXT pathctxt, const char* refns, const MDAL_CTXT refctxt ) {
+   // check for NULL args
+   if ( !(pathctxt)  ||  !(refctxt) ) {
+      LOG( LOG_ERR, "Received a NULL MDAL_CTXT reference\n" );
+      errno = EINVAL;
+      return NULL;
+   }
+   if ( !(pathns)  ||  !(refns) ) {
+      LOG( LOG_ERR, "Received a NULL namespace path\n" );
+      errno = EINVAL;
+      return NULL;
+   }
+   POSIX_MDAL_CTXT ppathctxt = (POSIX_MDAL_CTXT) pathctxt;
+   POSIX_MDAL_CTXT prefctxt = (POSIX_MDAL_CTXT) refctxt;
+   // create the corresponding posix path for the path NS
+   size_t nspathlen = namespacepath( pathns, NULL, 0 );
+   if ( nspathlen == 0 ) {
+      LOG( LOG_ERR, "Failed to identify corresponding path for NS: \"%s\"\n", pathns );
+      return NULL;
+   }
+   char* nspath = malloc( sizeof(char) * (nspathlen + 1) );
+   if ( !(nspath) ) {
+      LOG( LOG_ERR, "Failed to allocate path string for NS: \"%s\"\n", pathns );
+      return NULL;
+   }
+   if ( namespacepath( pathns, nspath, nspathlen + 1 ) != nspathlen ) {
+      LOG( LOG_ERR, "Inconsistent path generation for NS: \"%s\"\n", pathns );
+      free( nspath );
+      return NULL;
+   }
+   // create a new ctxt structure
+   POSIX_MDAL_CTXT newctxt = malloc( sizeof(struct posix_mdal_context_struct) );
+   if ( !(newctxt) ) {
+      LOG( LOG_ERR, "Failed to allocate space for a new posix MDAL_CTXT\n" );
+      free( nspath );
+      return NULL;
+   }
+   // open the path dir, according to the target NS path
+   if ( *nspath == '/' ) {
+      // ensure the ppathctxt is set to the secureroot dir
+      if ( ppathctxt->pathd >= 0 ) {
+         LOG( LOG_ERR, "Absolute NS paths can only be used from a CTXT with no NS set\n" );
+         errno = EINVAL;
+         free( newctxt );
+         free( nspath );
+         return NULL;
+      }
+      // absoulute paths are opened via the root dir (skipping the leading '/')
+      newctxt->pathd = openat( ppathctxt->refd, (nspath + 1), O_RDONLY );
+   }
+   else {
+      // ensure the refd is set to an actual reference dir
+      if ( ppathctxt->pathd < 0 ) {
+         LOG( LOG_ERR, "Relative NS paths can only be used from a CTXT with a NS set\n" );
+         errno = EINVAL;
+         free( newctxt );
+         free( nspath );
+         return NULL;
+      }
+      // relative paths are opened via the ref dir of the pbasectxt
+      newctxt->pathd = openat( ppathctxt->refd, nspath, O_RDONLY );
+   }
+   if ( newctxt->pathd < 0 ) {
+      LOG( LOG_ERR, "Failed to open the user path dir: \"%s\"\n", nspath );
+      free( newctxt );
+      free( nspath );
+      return NULL;
+   }
+
+   // stat the opened path dir, for later comparison
+   struct stat pathstat;
+   if ( fstat( newctxt->pathd, &(pathstat) ) ) {
+      LOG( LOG_ERR, "Failed to stat opened path dir: \"%s\"\n", nspath );
+      close( newctxt->pathd );
+      free( newctxt );
+      free( nspath );
+      return NULL;
+   }
+   free( nspath ); // done with this path
+
+   // create the corresponding posix path for the ref NS
+   nspathlen = namespacepath( refns, NULL, 0 );
+   if ( nspathlen == 0 ) {
+      LOG( LOG_ERR, "Failed to identify corresponding path for NS: \"%s\"\n", refns );
+      close( newctxt->pathd );
+      free( newctxt );
+      return NULL;
+   }
+   nspath = malloc( sizeof(char) * (nspathlen + 2 + strlen(PMDAL_REF)) );
+   if ( !(nspath) ) {
+      LOG( LOG_ERR, "Failed to allocate path string for NS: \"%s\"\n", refns );
+      close( newctxt->pathd );
+      free( newctxt );
+      return NULL;
+   }
+   if ( namespacepath( refns, nspath, nspathlen + 1 ) != nspathlen ) {
+      LOG( LOG_ERR, "Inconsistent path generation for NS: \"%s\"\n", refns );
+      free( nspath );
+      close( newctxt->pathd );
+      free( newctxt );
+      return NULL;
+   }
+   if ( sprintf( nspath + nspathlen, "/%s", PMDAL_REF ) != strlen(PMDAL_REF) + 1 ) {
+      LOG( LOG_ERR, "Failed to append PMDAL_REF suffix to path of NS: \"%s\"\n", refns );
+      free( nspath );
+      close( newctxt->pathd );
+      free( newctxt );
+      return NULL;
+   }
+   // open the ref dir, according to the target NS path
+   if ( *nspath == '/' ) {
+      // ensure the prefctxt is set to the secureroot dir
+      if ( prefctxt->pathd >= 0 ) {
+         LOG( LOG_ERR, "Absolute NS paths can only be used from a CTXT with no NS set\n" );
+         errno = EINVAL;
+         free( nspath );
+         close( newctxt->pathd );
+         free( newctxt );
+         return NULL;
+      }
+      // absoulute paths are opened via the root dir (skipping the leading '/')
+      newctxt->refd = openat( prefctxt->refd, (nspath + 1), O_RDONLY );
+   }
+   else {
+      // ensure the refd is set to an actual reference dir
+      if ( prefctxt->pathd < 0 ) {
+         LOG( LOG_ERR, "Relative NS paths can only be used from a CTXT with a NS set\n" );
+         errno = EINVAL;
+         free( nspath );
+         close( newctxt->pathd );
+         free( newctxt );
+         return NULL;
+      }
+      // relative paths are opened via the ref dir of the pbasectxt
+      newctxt->refd = openat( prefctxt->refd, nspath, O_RDONLY );
+   }
+   if ( newctxt->refd < 0 ) {
+      LOG( LOG_ERR, "Failed to open the ref dir: \"%s\"\n", nspath );
+      free( nspath );
+      close( newctxt->pathd );
+      free( newctxt );
+      return NULL;
+   }
+   free( nspath ); // done with this path
+
+   // stat the opened reference dir
+   struct stat stval;
+   if ( fstat( newctxt->refd, &(stval) ) ) {
+      LOG( LOG_ERR, "Failed to stat reference dir of NS \"%s\"\n", refns );
+      close( newctxt->refd );
+      close( newctxt->pathd );
+      free( newctxt );
+      return NULL;
+   }
+   // verify that these dirs exist on the same device
+   if ( stval.st_dev != pathstat.st_dev ) {
+      LOG( LOG_ERR, "Cross-Device CTXT split detected\n" );
+      close( newctxt->refd );
+      close( newctxt->pathd );
+      free( newctxt );
+      errno = EXDEV;
+      return NULL;
+   }
+   newctxt->dev = stval.st_dev;
    return (MDAL_CTXT) newctxt;
 }
 
@@ -2165,11 +2367,17 @@ MDAL_FHANDLE posixmdal_open( MDAL_CTXT ctxt, const char* path, int flags ) {
       LOG( LOG_ERR, "Failed to open target path: \"%s\"\n", path );
       return NULL;
    }
-   // ensure we're not opening a dir ( which requires opendir )
+   // ensure we're not opening a dir ( which requires opendir ) OR exiting the expected device ( potential security issue )
    struct stat fdstat;
    if ( fstat( fd, &(fdstat) ) ) {
       LOG( LOG_ERR, "Could not verify target is a file: \"%s\" (%s)\n", path, strerror(errno) );
       close( fd );
+      return NULL;
+   }
+   else if ( fdstat.st_dev != pctxt->dev ) {
+      LOG( LOG_ERR, "Target resides on a different device ( CTXT=%zd , TGT=%zd )\n", pctxt->dev, fdstat.st_dev );
+      close( fd );
+      errno = EXDEV;
       return NULL;
    }
    else if ( S_ISDIR(fdstat.st_mode) ) {
@@ -2970,6 +3178,8 @@ MDAL posix_mdal_init( xmlNode* root ) {
          }
          // initialize the pathd, indicating no path set
          pctxt->pathd = -1;
+         // initialize the dev to an arbitrary value
+         pctxt->dev = 0;
 
          // open the directory specified by the node content
          char* nsrootpath = strdup( (char*) root->children->content );
@@ -3009,6 +3219,7 @@ MDAL posix_mdal_init( xmlNode* root ) {
          pmdal->checksec = posixmdal_checksec;
          pmdal->setnamespace = posixmdal_setnamespace;
          pmdal->newctxt = posixmdal_newctxt;
+         pmdal->newsplitctxt = posixmdal_newsplitctxt;
          pmdal->createnamespace = posixmdal_createnamespace;
          pmdal->destroynamespace = posixmdal_destroynamespace;
          pmdal->opendirnamespace = posixmdal_opendirnamespace;
