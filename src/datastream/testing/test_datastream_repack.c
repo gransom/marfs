@@ -200,7 +200,7 @@ int main(int argc, char **argv)
    }
 
    // keep track of this file's rpath
-   char* rpath = datastream_genrpath( &(stream->files->ftag), &(stream->ns->prepo->metascheme) );
+   char* rpath = datastream_genrpath( &(stream->files->ftag), stream->ns->prepo->metascheme.reftable );
    if ( rpath == NULL ) {
       printf( "Failed to identify the rpath of no-pack 'file1' (%s)\n", strerror(errno) );
       return -1;
@@ -239,7 +239,7 @@ int main(int argc, char **argv)
    }
 
    // keep track of this file's rpath
-   char* rpath2 = datastream_genrpath( &(stream->files->ftag), &(stream->ns->prepo->metascheme) );
+   char* rpath2 = datastream_genrpath( &(stream->files->ftag), stream->ns->prepo->metascheme.reftable );
    if ( rpath2 == NULL ) {
       printf( "Failed to identify the rpath of no-pack 'file2' (%s)\n", strerror(errno) );
       return -1;
@@ -276,7 +276,7 @@ int main(int argc, char **argv)
    }
 
    // keep track of this file's rpath
-   char* rpath3 = datastream_genrpath( &(stream->files->ftag), &(stream->ns->prepo->metascheme) );
+   char* rpath3 = datastream_genrpath( &(stream->files->ftag), stream->ns->prepo->metascheme.reftable );
    if ( rpath3 == NULL ) {
       printf( "Failed to identify the rpath of no-pack 'file3' (%s)\n", strerror(errno) );
       return -1;
@@ -325,11 +325,11 @@ int main(int argc, char **argv)
    // repack the third file
    DATASTREAM repackstream = NULL;
    if ( datastream_repack( &(repackstream), rpath3, &(pos), NULL ) ) {
-      printf( "failed to open repack stream for target \"%s\" (%s)\n", rpath3, strerror(errno) );
+      printf( "failed to open repack stream for target1 \"%s\" (%s)\n", rpath3, strerror(errno) );
       return -1;
    }
    // keep track of this file's rpath
-   char* rpckpath1 = datastream_genrpath( &(repackstream->files->ftag), &(repackstream->ns->prepo->metascheme) );
+   char* rpckpath1 = datastream_genrpath( &(repackstream->files->ftag), repackstream->ns->prepo->metascheme.reftable );
    if ( rpckpath1 == NULL ) {
       printf( "Failed to identify the repack path of 'file3' (%s)\n", strerror(errno) );
       return -1;
@@ -409,7 +409,7 @@ int main(int argc, char **argv)
    }
    // repack the first file
    if ( datastream_repack( &(repackstream), rpath, &(pos), NULL ) ) {
-      printf( "failed to open repack stream for target \"%s\" (%s)\n", rpath, strerror(errno) );
+      printf( "failed to open repack stream for target2 \"%s\" (%s)\n", rpath, strerror(errno) );
       return -1;
    }
    if ( datastream_scan( &(stream), rpath, &(pos) ) ) {
@@ -433,7 +433,7 @@ int main(int argc, char **argv)
       return -1;
    }
    // keep track of this file's rpath
-   char* rpckpath2 = datastream_genrpath( &(repackstream->files->ftag), &(repackstream->ns->prepo->metascheme) );
+   char* rpckpath2 = datastream_genrpath( &(repackstream->files->ftag), repackstream->ns->prepo->metascheme.reftable );
    if ( rpckpath2 == NULL ) {
       printf( "Failed to identify the repack path of 'file1' (%s)\n", strerror(errno) );
       return -1;
@@ -660,7 +660,7 @@ int main(int argc, char **argv)
    }
 
    // keep track of this file's rpath
-   rpath = datastream_genrpath( &(stream->files->ftag), &(stream->ns->prepo->metascheme) );
+   rpath = datastream_genrpath( &(stream->files->ftag), stream->ns->prepo->metascheme.reftable );
    if ( rpath == NULL ) {
       printf( "Failed to identify the rpath of pack 'file1' (%s)\n", strerror(errno) );
       return -1;
@@ -686,7 +686,7 @@ int main(int argc, char **argv)
    }
 
    // keep track of this file's rpath
-   rpath2 = datastream_genrpath( &(stream->files[1].ftag), &(stream->ns->prepo->metascheme) );
+   rpath2 = datastream_genrpath( &(stream->files[1].ftag), stream->ns->prepo->metascheme.reftable );
    if ( rpath2 == NULL ) {
       printf( "Failed to identify the rpath of pack 'file2' (%s)\n", strerror(errno) );
       return -1;
@@ -732,7 +732,7 @@ int main(int argc, char **argv)
    }
 
    // keep track of this file's rpath
-   rpath3 = datastream_genrpath( &(stream->files->ftag), &(stream->ns->prepo->metascheme) );
+   rpath3 = datastream_genrpath( &(stream->files->ftag), stream->ns->prepo->metascheme.reftable );
    if ( rpath3 == NULL ) {
       printf( "Failed to identify the rpath of pack 'file3' (%s)\n", strerror(errno) );
       return -1;
@@ -754,11 +754,11 @@ int main(int argc, char **argv)
 
    // repack the second and last files
    if ( datastream_repack( &(repackstream), rpath3, &(pos), "repack-prog2" ) ) {
-      printf( "failed to open repack stream for target \"%s\" (%s)\n", rpath3, strerror(errno) );
+      printf( "failed to open repack stream for target3 \"%s\" (%s)\n", rpath3, strerror(errno) );
       return -1;
    }
    // keep track of this file's rpath
-   rpckpath1 = datastream_genrpath( &(repackstream->files->ftag), &(repackstream->ns->prepo->metascheme) );
+   rpckpath1 = datastream_genrpath( &(repackstream->files->ftag), repackstream->ns->prepo->metascheme.reftable );
    if ( rpckpath1 == NULL ) {
       printf( "Failed to identify the repack path of packed 'file3' (%s)\n", strerror(errno) );
       return -1;
@@ -787,11 +787,11 @@ int main(int argc, char **argv)
       return -1;
    }
    if ( datastream_repack( &(repackstream), rpath2, &(pos), NULL ) ) {
-      printf( "failed to open repack stream for target \"%s\" (%s)\n", rpath2, strerror(errno) );
+      printf( "failed to open repack stream for target4 \"%s\" (%s)\n", rpath2, strerror(errno) );
       return -1;
    }
    // keep track of this file's rpath
-   rpckpath2 = datastream_genrpath( &(repackstream->files[1].ftag), &(repackstream->ns->prepo->metascheme) );
+   rpckpath2 = datastream_genrpath( &(repackstream->files[1].ftag), repackstream->ns->prepo->metascheme.reftable );
    if ( rpckpath2 == NULL ) {
       printf( "Failed to identify the repack path of packed 'file2' (%s)\n", strerror(errno) );
       return -1;
@@ -830,10 +830,10 @@ int main(int argc, char **argv)
 
    // start, then abort, a repack of the first file
    if ( datastream_repack( &(repackstream), rpath, &(pos), "repack-prog2" ) ) {
-      printf( "failed to open repack stream for target \"%s\" (%s)\n", rpath, strerror(errno) );
+      printf( "failed to open repack stream for target5 \"%s\" (%s)\n", rpath, strerror(errno) );
       return -1;
    }
-   char* rpckpath3 = datastream_genrpath( &(repackstream->files->ftag), &(repackstream->ns->prepo->metascheme) );
+   char* rpckpath3 = datastream_genrpath( &(repackstream->files->ftag), repackstream->ns->prepo->metascheme.reftable );
    if ( rpckpath3 == NULL ) {
       printf( "Failed to identify the repack path of packed 'file1' (%s)\n", strerror(errno) );
       return -1;

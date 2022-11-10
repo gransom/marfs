@@ -177,7 +177,7 @@ char* repackmarkertgt( const char* rpath, FTAG* ftag, const marfs_ms* ms ) {
    char* refpath = NULL;
    if ( rpath == NULL ) {
       // gen an rpath if we didn't get one
-      refpath = datastream_genrpath( ftag, ms );
+      refpath = datastream_genrpath( ftag, ms->reftable );
    }
    else {
       refpath = strdup( rpath );
@@ -390,6 +390,7 @@ int getftag(DATASTREAM stream, STREAMFILE* file) {
    // attempt to set struct values based on the ftag string
    if (ftag_initstr(&(file->ftag), stream->ftagstr)) {
       LOG(LOG_ERR, "Failed to initialize ftag values for file\n");
+      errno = ENOSTR; // cheeky error code to indicate invalid datastream
       return -1;
    }
    return 0;
@@ -524,6 +525,9 @@ int create_new_file(DATASTREAM stream, const char* path, MDAL_CTXT ctxt, mode_t 
       .ftag.streamid = stream->streamid,
       .ftag.objfiles = ds->objfiles,
       .ftag.objsize = ds->objsize,
+      .ftag.refbreadth = ms->refbreadth,
+      .ftag.refdepth = ms->refdepth,
+      .ftag.refdigits = ms->refdigits,
       .ftag.fileno = stream->fileno,
       .ftag.objno = stream->objno,   // potentially modified below
       .ftag.offset = stream->offset, // potentially modified below
@@ -541,7 +545,7 @@ int create_new_file(DATASTREAM stream, const char* path, MDAL_CTXT ctxt, mode_t 
    };
 
    // establish a reference path for the new file
-   char* newrpath = datastream_genrpath(&(newfile.ftag), &(stream->ns->prepo->metascheme));
+   char* newrpath = datastream_genrpath(&(newfile.ftag), stream->ns->prepo->metascheme.reftable);
    if (newrpath == NULL) {
       LOG(LOG_ERR, "Failed to identify reference path for stream\n");
       if (errno == EBADFD) {
@@ -889,6 +893,9 @@ int open_repack_file(DATASTREAM stream, const char* path, MDAL_CTXT ctxt) {
    curfile->ftag.streamid = stream->streamid;
    curfile->ftag.objfiles = ds->objfiles;
    curfile->ftag.objsize = ds->objsize;
+   curfile->ftag.refbreadth = ms->refbreadth;
+   curfile->ftag.refdepth = ms->refdepth;
+   curfile->ftag.refdigits = ms->refdigits;
    curfile->ftag.fileno = stream->fileno;
    curfile->ftag.objno = stream->objno;   // potentially modified below
    curfile->ftag.offset = stream->offset; // potentially modified below
@@ -983,7 +990,7 @@ int open_repack_file(DATASTREAM stream, const char* path, MDAL_CTXT ctxt) {
    }
 
    // link the existing file to the new reference location
-   char* newpath = datastream_genrpath(&(curfile->ftag), &(stream->ns->prepo->metascheme));
+   char* newpath = datastream_genrpath(&(curfile->ftag), stream->ns->prepo->metascheme.reftable);
    if (newpath == NULL) {
       LOG(LOG_ERR, "Failed to identify new reference path for repacked file: \"%s\"\n", path);
       if (errno == EBADFD) {
@@ -1259,7 +1266,7 @@ int close_current_obj(DATASTREAM stream, FTAG* curftag, MDAL_CTXT mdalctxt) {
       free(rmarkstr);
 
       // identify the rpath of the problem file
-      char* filerpath = datastream_genrpath( curftag, &(stream->ns->prepo->metascheme) );
+      char* filerpath = datastream_genrpath( curftag, stream->ns->prepo->metascheme.reftable );
       if ( filerpath == NULL ) {
          LOG( LOG_ERR, "Failed to identify the rpath of the problem file\n" );
          free( rpath );
@@ -1295,75 +1302,40 @@ int close_current_obj(DATASTREAM stream, FTAG* curftag, MDAL_CTXT mdalctxt) {
       int olderrno = errno;
       errno = 0;
       if ( mdal->linkref( mdalctxt, 1, filerpath, rpath ) ) {
-         errno = olderrno;
          if ( errno == EEXIST ) {
+            // note existance, but just continue ( we can still attach an xattr )
             LOG( LOG_INFO, "Rebuild marker already exists: \"%s\"\n", rpath );
+         }
+         else {
+            LOG( LOG_ERR, "Failed to link problem file ( \"%s\" ) to rebuild marker location ( \"%s\" )\n", filerpath, rpath );
             free(filerpath);
             free(rpath);
             free(rtagstr);
             if (releasectxt) {
                mdal->destroyctxt(mdalctxt);
             }
-            return 0;
+            return -1;
          }
-         LOG( LOG_ERR, "Failed to link problem file ( \"%s\" ) to rebuild marker location ( \"%s\" )\n", filerpath, rpath );
-         free(filerpath);
-         free(rpath);
-         free(rtagstr);
-         if (releasectxt) {
-            mdal->destroyctxt(mdalctxt);
-         }
-         return -1;
-      }
-      free(filerpath);
-      MDAL_FHANDLE rhandle = mdal->openref(mdalctxt, rpath, O_WRONLY, 0);
-      if (rhandle == NULL  &&  errno != EEXIST) {
-         LOG(LOG_ERR, "Failed to create rebuild marker: \"%s\"\n", rpath);
-         free(rpath);
-         free(rtagstr);
-         if (releasectxt) {
-            mdal->destroyctxt(mdalctxt);
-         }
-         return -1;
       }
       errno = olderrno;
-      if ( rhandle == NULL ) {
-         // failure with EEXIST
-         LOG( LOG_INFO, "Rebuild marker already exists: \"%s\"\n", rpath );
-         free( rpath );
-         free( rtagstr );
-         if (releasectxt && mdal->destroyctxt(mdalctxt)) {
-            LOG(LOG_WARNING, "Failed to destroy MDAL_CTXT\n");
+      free(filerpath);
+      MDAL_FHANDLE rhandle = mdal->openref(mdalctxt, rpath, O_WRONLY, 0);
+      if (rhandle == NULL) {
+         LOG(LOG_ERR, "Failed to open handle for rebuild marker: \"%s\"\n", rpath);
+         free(rpath);
+         free(rtagstr);
+         if (releasectxt) {
+            mdal->destroyctxt(mdalctxt);
          }
-         return 0;
+         return -1;
       }
-      LOG(LOG_INFO, "Created rebuild marker: \"%s\"\n", rpath);
+      LOG(LOG_INFO, "Opened rebuild marker: \"%s\"\n", rpath);
       free(rpath);
 
       // identify the rebuild tag name
-      ssize_t rtagnamelen = snprintf( NULL, 0, "%s-%zu", RTAG_NAME, curftag->objno );
-      if ( rtagnamelen < 1 ) {
-         LOG( LOG_ERR, "Failed to identify the length of rebuild tag for object %zu\n", curftag->objno );
-         mdal->close(rhandle);
-         free(rtagstr);
-         if (releasectxt) {
-            mdal->destroyctxt(mdalctxt);
-         }
-         return -1;
-      }
-      char* rtagname = malloc( sizeof(char) * (rtagnamelen + 1) );
+      char* rtagname = rtag_getname( curftag->objno );
       if ( rtagname == NULL ) {
-         LOG( LOG_ERR, "Failed to allocate space for rebuild tag of length %zd\n", rtagnamelen );
-         mdal->close(rhandle);
-         free(rtagstr);
-         if (releasectxt) {
-            mdal->destroyctxt(mdalctxt);
-         }
-         return -1;
-      }
-      if ( snprintf( rtagname, rtagnamelen + 1, "%s-%zu", RTAG_NAME, curftag->objno ) != rtagnamelen ) {
-         LOG( LOG_ERR, "Rebuild tag name has inconsistent length\n" );
-         free(rtagname);
+         LOG( LOG_ERR, "Failed to identify RTAG name for object %zu\n", curftag->objno );
          mdal->close(rhandle);
          free(rtagstr);
          if (releasectxt) {
@@ -1390,6 +1362,7 @@ int close_current_obj(DATASTREAM stream, FTAG* curftag, MDAL_CTXT mdalctxt) {
       if (releasectxt && mdal->destroyctxt(mdalctxt)) {
          LOG(LOG_WARNING, "Failed to destroy MDAL_CTXT\n");
       }
+      errno = olderrno;
    }
    else {
       free(objstate.data_status);
@@ -1424,6 +1397,7 @@ int close_current_obj(DATASTREAM stream, FTAG* curftag, MDAL_CTXT mdalctxt) {
 DATASTREAM genstream(STREAM_TYPE type, const char* path, char rpathflag, marfs_position* pos, mode_t mode, const char* ctag, MDAL_FHANDLE* phandle) {
    // create some shorthand references
    marfs_ds* ds = &(pos->ns->prepo->datascheme);
+   marfs_ms* ms = &(pos->ns->prepo->metascheme);
 
    // allocate the new datastream and check for success
    DATASTREAM stream = malloc(sizeof(struct datastream_struct));
@@ -1494,6 +1468,9 @@ DATASTREAM genstream(STREAM_TYPE type, const char* path, char rpathflag, marfs_p
    curfile->ftag.streamid = stream->streamid;
    curfile->ftag.objfiles = ds->objfiles;
    curfile->ftag.objsize = ds->objsize;
+   curfile->ftag.refbreadth = ms->refbreadth;
+   curfile->ftag.refdepth = ms->refdepth;
+   curfile->ftag.refdigits = ms->refdigits;
    curfile->ftag.fileno = 0;
    curfile->ftag.objno = 0;
    curfile->ftag.endofstream = 0;
@@ -1857,7 +1834,7 @@ int completefile(DATASTREAM stream, STREAMFILE* file) {
          return -1;
       } // NOTE -- stream->ftagstr now contains the original FTAG value
       // produce the original reference path of this file
-      char* origrefpath = datastream_genrpath( &(origfile.ftag), ms );
+      char* origrefpath = datastream_genrpath( &(origfile.ftag), ms->reftable );
       if ( origrefpath == NULL ) {
          LOG( LOG_ERR, "Failed to identify original refpath of \"%s\"\n", stream->finfo.path );
          free( origfile.ftag.ctag );
@@ -2014,11 +1991,11 @@ int completefile(DATASTREAM stream, STREAMFILE* file) {
 /**
  * Generate a reference path for the given FTAG
  * @param FTAG* ftag : Reference to the FTAG value to generate an rpath for
- * @param const marfs_ms* ms : Reference to the current MarFS metadata scheme
+ * @param HASH_TABLE reftable : Reference position hash table to be used
  * @return char* : Reference to the newly generated reference path, or NULL on failure
  *                 NOTE -- returned path must be freed by caller
  */
-char* datastream_genrpath(FTAG* ftag, const marfs_ms* ms) {
+char* datastream_genrpath(FTAG* ftag, HASH_TABLE reftable) {
    // generate the meta reference name of this file
    size_t rnamelen = ftag_metatgt(ftag, NULL, 0);
    if (rnamelen < 1) {
@@ -2037,7 +2014,7 @@ char* datastream_genrpath(FTAG* ftag, const marfs_ms* ms) {
    }
    // determine the target reference path of this file
    HASH_NODE* noderef = NULL;
-   if (hash_lookup(ms->reftable, refname, &(noderef)) < 0) {
+   if (hash_lookup(reftable, refname, &(noderef)) < 0) {
       LOG(LOG_ERR, "Failed to identify reference path for metaname \"%s\"\n", refname);
       free(refname);
       return NULL;
@@ -2872,10 +2849,11 @@ int datastream_repack_cleanup(const char* refpath, marfs_position* pos) {
       LOG( LOG_ERR, "Failed to parse \"%s\" value of repack marker \"%s\"\n", TREPACK_TAG_NAME, refpath );
       free( tgtftagstr );
       ms->mdal->close( rmarker );
+      errno = ENOSTR; // cheeky error code to indicate invalid datastream
       return -1;
    }
    // identify and open the repack target file
-   char* repacktgtpath = datastream_genrpath( &(tgtftag), ms );
+   char* repacktgtpath = datastream_genrpath( &(tgtftag), ms->reftable );
    if ( repacktgtpath == NULL ) {
       LOG( LOG_ERR, "Failed to identify repack tgt path of repack marker \"%s\"\n", refpath );
       free( tgtftagstr );
@@ -2942,6 +2920,7 @@ int datastream_repack_cleanup(const char* refpath, marfs_position* pos) {
          ms->mdal->close( rmarker );
          return -1;
       }
+      *(tgtftagstr + tgtftagstrlen) = '\0'; // ensure a NULL-terminated string
    }
    // now check for a real FTAG value
    int retval = 0;
@@ -3006,6 +2985,7 @@ int datastream_repack_cleanup(const char* refpath, marfs_position* pos) {
          ms->mdal->close( rmarker );
          return -1;
       }
+      *(realftagstr + realftagstrlen) = '\0'; // ensure a NULL-terminated string
       FTAG realftag;
       if ( ftag_initstr( &(realftag), realftagstr ) ) {
          LOG( LOG_ERR, "FTAG of rebuild marker \"%s\" could not be parsed\n", refpath );
@@ -3014,10 +2994,11 @@ int datastream_repack_cleanup(const char* refpath, marfs_position* pos) {
          free( repacktgtpath );
          free( tgtftagstr );
          ms->mdal->close( rmarker );
+         errno = ENOSTR; // cheeky error code to indicate invalid datastream
          return -1;
       }
       free( realftagstr );
-      renametgt = datastream_genrpath( &(realftag), ms );
+      renametgt = datastream_genrpath( &(realftag), ms->reftable );
       if ( renametgt == NULL ) {
          LOG( LOG_ERR, "Failed to identify FTAG tgt of repack marker \"%s\"\n", refpath );
          free( realftag.ctag );

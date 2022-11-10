@@ -95,6 +95,10 @@ typedef struct ftag_struct {
    // stream structure info
    size_t objfiles;
    size_t objsize;
+   // reference tree info
+   int    refbreadth;
+   int    refdepth;
+   int    refdigits;
    // file position info
    size_t fileno;
    size_t objno;
@@ -214,8 +218,16 @@ size_t ftag_datatgt( const FTAG* ftag, char* tgtstr, size_t len );
 #define RTAG_CURRENT_MAJORVERSION 0
 #define RTAG_CURRENT_MINORVERSION 1
 
-// NOTE -- expected to append '-<objectNumber>' to this tag name
-#define RTAG_NAME "MARFS-REBUILD"
+// NOTE -- RTAG names depend upon the object number they are associated with
+//         Use the rtag_getname() func, instead of a static _NAME definition
+
+/**
+ * Generate the appropraite RTAG name value for a specific data object
+ * @param size_t objno : Object number associated with the RTAG
+ * @return char* : String name of the RTAG value, or NULL on failure
+ *                 NOTE -- it is the caller's responsibility to free this
+ */
+char* rtag_getname( size_t objno );
 
 /**
  * Initialize a ne_state value based on the provided string value
@@ -247,6 +259,43 @@ size_t rtag_tostr( const ne_state* rtag, size_t stripewidth, char* tgtstr, size_
 // MARFS TARGET REPACK TAG  --  attached to files during a repack, storing target FTAG info
 
 #define TREPACK_TAG_NAME "TGT-MARFS-FILE"
+
+
+// MARFS Garbage Collection TAG  -- attached to files when subsequent datastream references have been deleted
+
+#define GCTAG_CURRENT_MAJORVERSION 0
+#define GCTAG_CURRENT_MINORVERSION 1
+
+#define GCTAG_NAME "MARFS-GC"
+
+typedef struct gctag_struct {
+   size_t refcnt;
+   char   eos;
+   char   delzero;
+   char   inprog;
+} GCTAG;
+
+/**
+ * Initialize a GCTAG based on the provided string value
+ * @param GCTAG* gctag : Reference to the GCTAG structure to be populated
+ * @param const char* gctagstr : Reference to the string to be parsed
+ * @return int : Zero on success, or -1 on failure
+ */
+int gctag_initstr( GCTAG* gctag, char* gctagstr );
+
+/**
+ * Populate a string based on the provided GCTAG
+ * @param const GCTAG* gctag : Reference to the GCTAG structure to pull values from
+ * @param char* tgtstr : Reference to the string to be populated
+ * @param size_t len : Allocated length of the target length
+ * @return size_t : Length of the produced string ( excluding NULL-terminator ), or zero if
+ *                  an error occurred.
+ *                  NOTE -- if this value is >= the length of the provided buffer, this
+ *                  indicates that insufficint buffer space was provided and the resulting
+ *                  output string was truncated.
+ */
+size_t gctag_tostr( GCTAG* gctag, char*tgtstr, size_t len );
+
 
 #endif // _TAGGING_H
 

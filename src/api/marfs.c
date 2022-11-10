@@ -1603,10 +1603,17 @@ int marfs_closedir(marfs_dhandle dh) {
       LOG( LOG_INFO, "EXIT - Failure w/ \"%s\"\n", strerror(errno) );
       return -1;
    }
+   // acquire directory lock
+   if ( pthread_mutex_lock( &(dh->lock) ) ) {
+      LOG( LOG_ERR, "Failed to aqcuire marfs_dhandle lock\n" );
+      LOG( LOG_INFO, "EXIT - Failure w/ \"%s\"\n", strerror(errno) );
+      return -1;
+   }
    // close the handle and free all memory
    MDAL curmdal = dh->ns->prepo->metascheme.mdal;
    int retval = curmdal->closedir( dh->metahandle );
    config_destroynsref( dh->ns );
+   pthread_mutex_unlock( &(dh->lock) );
    pthread_mutex_destroy( &(dh->lock) );
    free( dh );
    if ( retval == 0 ) { LOG( LOG_INFO, "EXIT - Success\n" ); }
@@ -2127,9 +2134,9 @@ marfs_fhandle marfs_open(marfs_ctxt ctxt, marfs_fhandle stream, const char *path
    if ( dupref == NULL ) {
       LOG( LOG_ERR, "Failed to duplicate op NS reference\n" );
       pathcleanup( subpath, &oppos );
-      if ( newstream ) { free( stream ); }
-      else if ( stream->metahandle == NULL ) { errno = EBADFD; } // ref is now defunct
+      if ( !(newstream)  &&  stream->metahandle == NULL ) { errno = EBADFD; } // ref is now defunct
       pthread_mutex_unlock( &(stream->lock) );
+      if ( newstream ) { free( stream ); }
       LOG( LOG_INFO, "EXIT - Failure w/ \"%s\"\n", strerror(errno) );
       return NULL;
    }
@@ -2170,9 +2177,9 @@ marfs_fhandle marfs_open(marfs_ctxt ctxt, marfs_fhandle stream, const char *path
       }
       LOG( LOG_ERR, "Failure of datastream_open()\n" );
       pathcleanup( subpath, &oppos );
-      if ( newstream ) { free( stream ); }
-      else if ( stream->metahandle == NULL ) { errno = EBADFD; } // ref is now defunct
+      if ( !(newstream)  &&  stream->metahandle == NULL ) { errno = EBADFD; } // ref is now defunct
       pthread_mutex_unlock( &(stream->lock) );
+      if ( newstream ) { free( stream ); }
       LOG( LOG_INFO, "EXIT - Failure w/ \"%s\"\n", strerror(errno) );
       return NULL;
    }
