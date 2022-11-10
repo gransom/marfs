@@ -214,7 +214,7 @@ char* config_prevpathelem( char* path, char* curpath ) {
  * @param char updatectxt : Flag value indicating if an updated MDAL_CTXT is needed
  *                          Zero -> Position CTXT will be destroyed
  *                          Non-Zero -> Position CTXT will be updated to reference the new tgt NS
- * @return int : Zero on success, or -1 on failure
+ * @return int : Zero on success, 1 if the transition will exit the MarFS mountpoint, or -1 on failure
  */
 int config_enterns( marfs_position* pos, marfs_ns* nextns, const char* relpath, char updatectxt ) {
    // create some shorthand refs
@@ -223,6 +223,10 @@ int config_enterns( marfs_position* pos, marfs_ns* nextns, const char* relpath, 
    // check for expected case first - currently targetting a standard NS
    if ( curns->ghsource == NULL ) {
       // simplest case first, no ghostNS involved
+      if ( nextns == NULL ) {
+         // special case check for exit of the mountpoint
+         return 1;
+      }
       if ( nextns->ghtarget == NULL ) {
          // update the NS
          pos->ns = nextns;
@@ -373,18 +377,11 @@ int config_enterns( marfs_position* pos, marfs_ns* nextns, const char* relpath, 
 
    // we are moving within a GhostNS ( curns->ghsource != NULL )
 
-   // sanity check : ghost to ghost transitions should be impossible
-   if ( nextns->ghtarget != NULL ) {
-      LOG( LOG_ERR, "Detected theoretically impossible Ghost-to-Ghost transition from \"%s\" to \"%s\"\n",
-           curns->idstr, nextns->idstr );
-      config_abandonposition( pos );
-      return -1;
-   }
    // check if we're exiting the active Ghost, by traversing up to its parent NS
    //    NOTE -- The parent of the inital ghost may be the target of that ghost, making this check more complex
-   if ( ascending  &&  curns->ghtarget == curns->ghsource->ghtarget  &&  curns->ghsource->pnamespace == nextns ) {
+   if ( ascending  &&  nextns == curns->ghsource->ghtarget->pnamespace ) {
       // we are exiting the ghost dimension!
-      pos->ns = nextns;
+      pos->ns = curns->ghsource->pnamespace;
       // GhostNS contexts must always be destroyed
       if ( pos->ctxt  &&  curns->ghtarget->prepo->metascheme.mdal->destroyctxt( pos->ctxt ) ) {
          // nothing to do but complain
@@ -395,34 +392,41 @@ int config_enterns( marfs_position* pos, marfs_ns* nextns, const char* relpath, 
       if ( updatectxt ) {
          // create a fresh ctxt
          if ( config_fortifyposition( pos ) ) {
-            LOG( LOG_ERR, "Failed to establish a fresh ctxt for next NS: \"%s\"\n", nextns->idstr );
+            LOG( LOG_ERR, "Failed to establish a fresh ctxt for ghost parent NS: \"%s\"\n", pos->ns->idstr );
             config_abandonposition( pos );
             config_destroynsref( curns );
             return -1;
          }
          LOG( LOG_INFO, "Established a fresh MDAL_CTXT after exiting the ghost dimension\n" );
       }
-      LOG( LOG_INFO, "Exited GhostNS \"%s\" and entered parent: \"%s\"\n", curns->ghsource->idstr, nextns->idstr );
+      LOG( LOG_INFO, "Exited GhostNS \"%s\" and entered parent: \"%s\"\n", curns->ghsource->idstr, pos->ns->idstr );
       config_destroynsref( curns );
       return 0;
    }
+   // sanity check : ghost to ghost transitions should be impossible
+   if ( nextns->ghtarget != NULL ) {
+      LOG( LOG_ERR, "Detected theoretically impossible Ghost-to-Ghost transition from \"%s\" to \"%s\"\n",
+           curns->idstr, nextns->idstr );
+      config_abandonposition( pos );
+      return -1;
+   }
    // Target the new NS
    curns->ghtarget = nextns;
-   // Parent NS of the copy should match that of the target in most cases
+   // Parent NS of the copy should match that of the target
    curns->pnamespace = nextns->pnamespace;
-   if ( nextns == curns->ghsource->ghtarget ) {
-      // special case, reentering the origianl NS target means we must inherit the original Ghost's parent
-      //    We're redirecting, such that further ascent will exit the Ghost rather than continue up the tree
-      LOG( LOG_INFO, "Redirecting parent of active Ghost copy \"%s\" to \"%s\"\n",
-                     curns->idstr, curns->ghsource->pnamespace->idstr );
-      curns->pnamespace = curns->ghsource->pnamespace;
-      // sanity check : this should only ever happen when ascending
-      if ( !(ascending) ) {
-         LOG( LOG_ERR, "Encountered original target NS \"%s\" of GhostNS \"%s\" when NOT ascending\n", nextns->idstr, curns->ghsource->idstr );
-         config_abandonposition( pos );
-         return -1;
-      }
-   }
+//   if ( nextns == curns->ghsource->ghtarget ) {
+//      // special case, reentering the origianl NS target means we must inherit the original Ghost's parent
+//      //    We're redirecting, such that further ascent will exit the Ghost rather than continue up the tree
+//      LOG( LOG_INFO, "Redirecting parent of active Ghost copy \"%s\" to \"%s\"\n",
+//                     curns->idstr, curns->ghsource->pnamespace->idstr );
+//      curns->pnamespace = curns->ghsource->pnamespace;
+//      // sanity check : this should only ever happen when ascending
+//      if ( !(ascending) ) {
+//         LOG( LOG_ERR, "Encountered original target NS \"%s\" of GhostNS \"%s\" when NOT ascending\n", nextns->idstr, curns->ghsource->idstr );
+//         config_abandonposition( pos );
+//         return -1;
+//      }
+//   }
    // Parent repo always matches the target
    curns->prepo = nextns->prepo;
    // ID String manipulation depends on direction
@@ -735,7 +739,9 @@ char* config_shiftns( marfs_config* config, marfs_position* pos, char* subpath )
          // undo any previous path edit
          if ( replacechar ) { *parsepath = '/'; }
          replacechar = 0;
-         if ( pos->ns->pnamespace == NULL ) {
+         // update our position to the new NS
+         int nsentres = config_enterns( pos, pos->ns->pnamespace, "..", 1 );
+         if ( nsentres > 0 ) {
             // we can't move up any further
             // check if this relative path reenters the MarFS mountpoint
             parsepath = config_validatemnt( config, pos->ns, nextpelem );
@@ -750,12 +756,7 @@ char* config_shiftns( marfs_config* config, marfs_position* pos, char* subpath )
             // back to the rootNS at this point, so no need to adjust position vals
          }
          else {
-            // update our position to the new NS
-            if ( config_enterns( pos, pos->ns->pnamespace, "..", 1 ) ) {
-               LOG( LOG_ERR, "Failed to enter parent NS\n" );
-               return NULL;
-            }
-            // update our MDAL quick ref
+            // update our MDAL quick ref to reflect the new NS
             mdal = pos->ns->prepo->metascheme.mdal;
          }
       }
@@ -783,7 +784,7 @@ char* config_shiftns( marfs_config* config, marfs_position* pos, char* subpath )
                LOG( LOG_ERR, "Failed to enter subspace \"%s\"\n", pathelem );
                return NULL;
             }
-          }
+         }
          else {
             // the path is targetting the NS itself
             // NOTE -- We need to explicitly note this special case.  We don't want to 
@@ -2144,82 +2145,15 @@ int parse_metascheme( marfs_repo* repo, xmlNode* metaroot ) {
             LOG( LOG_ERR, "failed to locate required 'rbreadth' and/or 'rdepth' values for a 'namespaces' node\n" );
             return -1;
          }
-         // create a string to hold temporary reference paths
-         int breadthdigits = numdigits_unsigned( (unsigned long long) refbreadth );
-         if ( refdigits > breadthdigits ) { breadthdigits = refdigits; }
-         size_t rpathlen = ( refdepth * (breadthdigits + 1) ) + 1;
-         char* rpathtmp = malloc( sizeof(char) * rpathlen ); // used to populate node name strings
-         if ( rpathtmp == NULL ) {
-            LOG( LOG_ERR, "failed to allocate space for namespace refpaths\n" );
-            return -1;
-         }
-         // create an array of integers to hold reference indexes
-         int* refvals = malloc( sizeof(int) * refdepth );
-         if ( refvals == NULL ) {
-            LOG( LOG_ERR, "failed to allocate space for namespace reference indexes\n" );
-            free( rpathtmp );
-            return -1;
-         }
-         // create an array of hash nodes
-         size_t rnodecount = 1;
-         int curdepth = refdepth;
-         while ( curdepth ) { rnodecount *= refbreadth; curdepth--; } // equiv of breadth to the depth power
-         HASH_NODE* rnodelist = malloc( sizeof(struct hash_node_struct) * rnodecount );
-         if ( rnodelist == NULL ) {
-            LOG( LOG_ERR, "failed to allocate space for namespace reference hash nodes\n" );
-            free( rpathtmp );
-            free( refvals );
-            return -1;
-         }
-         // populate all hash nodes
-         size_t curnode;
-         for ( curnode = 0; curnode < rnodecount; curnode++ ) {
-            // populate the index for each rnode, starting at the depest level
-            size_t tmpnode = curnode;
-            for ( curdepth = refdepth; curdepth; curdepth-- ) {
-               refvals[curdepth-1] = tmpnode % refbreadth; // what is our index at this depth
-               tmpnode /= refbreadth; // find how many groups we have already traversed at this depth
-            }
-            // now populate the reference pathname
-            char* outputstr = rpathtmp;
-            int pathlenremaining = rpathlen;
-            for ( curdepth = 0; curdepth < refdepth; curdepth++ ) {
-               int prlen = snprintf( outputstr, pathlenremaining, "%.*d/", breadthdigits, refvals[curdepth] );
-               if ( prlen <= 0  ||  prlen >= pathlenremaining ) {
-                  LOG( LOG_ERR, "failed to generate reference path string\n" );
-                  free( rpathtmp );
-                  free( refvals );
-                  free( rnodelist );
-                  return -1;
-               }
-               pathlenremaining -= prlen;
-               outputstr += prlen;
-            }
-            // copy the reference pathname into the hash node
-            rnodelist[curnode].name = strndup( rpathtmp, rpathlen );
-            if ( rnodelist[curnode].name == NULL ) {
-               LOG( LOG_ERR, "failed to allocate reference path hash node name\n" );
-               free( rpathtmp );
-               free( refvals );
-               free( rnodelist );
-               return -1;
-            }
-            rnodelist[curnode].weight = 1;
-            rnodelist[curnode].content = NULL;
-            LOG( LOG_INFO, "created ref node: \"%s\"\n", rnodelist[curnode].name );
-         }
-         // free data structures which we no longer need
-         free( rpathtmp );
-         free( refvals );
+         ms->refbreadth = refbreadth;
+         ms->refdepth = refdepth;
+         ms->refdigits = refdigits;
          // create the reference tree hash table
-         ms->reftable = hash_init( rnodelist, rnodecount, 0 );
+         ms->reftable = config_genreftable( &(ms->refnodes), &(ms->refnodecount), refbreadth, refdepth, refdigits );
          if ( ms->reftable == NULL ) {
             LOG( LOG_ERR, "failed to create reference path table\n" );
-            free( rnodelist );
             return -1;
-         } // can't free the node list now, as it is in use by the hash table
-         ms->refnodes = rnodelist;
-         ms->refnodecount = rnodecount;
+         }
          // count all subnodes
          ms->nscount = 0;
          int subspaces = 0;
@@ -2367,6 +2301,9 @@ int create_repo( marfs_repo* repo, xmlNode* reporoot ) {
    repo->datascheme.scattertable = NULL;
    repo->metascheme.mdal = NULL;
    repo->metascheme.directread = 0;
+   repo->metascheme.refbreadth = 0;
+   repo->metascheme.refdepth = 0;
+   repo->metascheme.refdigits = 0;
    repo->metascheme.reftable = NULL;
    repo->metascheme.refnodes = NULL;
    repo->metascheme.refnodecount = 0;
@@ -3082,7 +3019,13 @@ int config_abandonposition( marfs_position* pos ) {
       errno = EINVAL;
       return -1;
    }
-   int retval = pos->ns->prepo->metascheme.mdal->destroyctxt( pos->ctxt );
+   int retval = 0;
+   if ( pos->ctxt ) {
+      retval = pos->ns->prepo->metascheme.mdal->destroyctxt( pos->ctxt );
+      if ( retval ) {
+         LOG( LOG_WARNING, "Failed to destroy position ctxt\n" );
+      }
+   }
    config_destroynsref( pos->ns );
    pos->ns = NULL;
    pos->depth = 0;
@@ -3091,11 +3034,112 @@ int config_abandonposition( marfs_position* pos ) {
 }
 
 /**
+ * Generate a new NS reference HASH_TABLE, used to identify the reference location of MarFS metadata files
+ * @param HASH_NODE** refnodes : Reference to be populated with the HASH_NODE list of the produced table
+ * @param size_t* refnodecount : Reference to be populated with the length of the above HASH_NODE list
+ * @param size_t refbreadth : Breadth value of the NS reference tree
+ * @param size_t refdepdth : Depth value of the NS reference tree
+ * @param size_t refdigits : Included digits value of the NS reference tree
+ * @return HASH_TABLE : The produced reference HASH_TABLE
+ */
+HASH_TABLE config_genreftable( HASH_NODE** refnodes, size_t* refnodecount, size_t refbreadth, size_t refdepth, size_t refdigits ) {
+   // create a string to hold temporary reference paths
+   int breadthdigits = numdigits_unsigned( (unsigned long long) refbreadth );
+   if ( refdigits > breadthdigits ) { breadthdigits = refdigits; }
+   size_t rpathlen = ( refdepth * (breadthdigits + 1) ) + 1;
+   char* rpathtmp = malloc( sizeof(char) * rpathlen ); // used to populate node name strings
+   if ( rpathtmp == NULL ) {
+      LOG( LOG_ERR, "failed to allocate space for namespace refpaths\n" );
+      return NULL;
+   }
+   // create an array of integers to hold reference indexes
+   int* refvals = malloc( sizeof(int) * refdepth );
+   if ( refvals == NULL ) {
+      LOG( LOG_ERR, "failed to allocate space for namespace reference indexes\n" );
+      free( rpathtmp );
+      return NULL;
+   }
+   // create an array of hash nodes
+   size_t rnodecount = 1;
+   int curdepth = refdepth;
+   while ( curdepth ) { rnodecount *= refbreadth; curdepth--; } // equiv of breadth to the depth power
+   HASH_NODE* rnodelist = malloc( sizeof(struct hash_node_struct) * rnodecount );
+   if ( rnodelist == NULL ) {
+      LOG( LOG_ERR, "failed to allocate space for namespace reference hash nodes\n" );
+      free( rpathtmp );
+      free( refvals );
+      return NULL;
+   }
+   // populate all hash nodes
+   size_t curnode;
+   for ( curnode = 0; curnode < rnodecount; curnode++ ) {
+      // populate the index for each rnode, starting at the depest level
+      size_t tmpnode = curnode;
+      for ( curdepth = refdepth; curdepth; curdepth-- ) {
+         refvals[curdepth-1] = tmpnode % refbreadth; // what is our index at this depth
+         tmpnode /= refbreadth; // find how many groups we have already traversed at this depth
+      }
+      // now populate the reference pathname
+      char* outputstr = rpathtmp;
+      int pathlenremaining = rpathlen;
+      for ( curdepth = 0; curdepth < refdepth; curdepth++ ) {
+         int prlen = snprintf( outputstr, pathlenremaining, "%.*d/", breadthdigits, refvals[curdepth] );
+         if ( prlen <= 0  ||  prlen >= pathlenremaining ) {
+            LOG( LOG_ERR, "failed to generate reference path string\n" );
+            free( rpathtmp );
+            free( refvals );
+            while ( curnode > 0 ) {
+               curnode--;
+               free( rnodelist[curnode].name );
+            }
+            free( rnodelist );
+            return NULL;
+         }
+         pathlenremaining -= prlen;
+         outputstr += prlen;
+      }
+      // copy the reference pathname into the hash node
+      rnodelist[curnode].name = strndup( rpathtmp, rpathlen );
+      if ( rnodelist[curnode].name == NULL ) {
+         LOG( LOG_ERR, "failed to allocate reference path hash node name\n" );
+         free( rpathtmp );
+         free( refvals );
+         while ( curnode > 0 ) {
+            curnode--;
+            free( rnodelist[curnode].name );
+         }
+         free( rnodelist );
+         return NULL;
+      }
+      rnodelist[curnode].weight = 1;
+      rnodelist[curnode].content = NULL;
+      LOG( LOG_INFO, "created ref node: \"%s\"\n", rnodelist[curnode].name );
+   }
+   // free data structures which we no longer need
+   free( rpathtmp );
+   free( refvals );
+   // create the reference tree hash table
+   HASH_TABLE reftable = hash_init( rnodelist, rnodecount, 0 );
+   if ( reftable == NULL ) {
+      LOG( LOG_ERR, "failed to create reference path table\n" );
+      while ( curnode > 0 ) {
+         curnode--;
+         free( rnodelist[curnode].name );
+      }
+      free( rnodelist );
+      return NULL;
+   } // can't free the node list now, as it is in use by the hash table
+   if ( refnodes ) { *refnodes = rnodelist; }
+   if ( refnodecount ) { *refnodecount = rnodecount; }
+   return reftable;
+}
+
+/**
  * Verifies the LibNE Ctxt of every repo, creates every namespace, creates all 
  *  reference dirs in the given config, and verifies the LibNE CTXT
  * @param marfs_config* config : Reference to the config to be validated
  * @param const char* tgtNS : Path of the NS to be verified
- * @param char MDALcheck : If non-zero, the MDAL security of each encountered NS will be verified
+ * @param char MDALcheck : If non-zero, the MDAL security and reference dirs of each encountered NS will be verified
  * @param char NEcheck : If non-zero, the LibNE ctxt of each encountered NS will be verified
  * @param char recurse : If non-zero, children of the target NS will also be verified
  * @param char fix : If non-zero, attempt to correct any problems encountered
@@ -3236,6 +3280,11 @@ int config_verify( marfs_config* config, const char* tgtNS, char MDALcheck, char
                errcount++;
             }
          }
+         if ( checkmdalsec  ||  checklibne ) {
+            // mark this repo as verified
+            vrepos[vrepocnt] = pos.ns->prepo;
+            vrepocnt++;
+         }
          // get the path of this NS
          char* nspath = NULL;
          if ( config_nsinfo( pos.ns->idstr, NULL, &(nspath) ) ) {
@@ -3255,7 +3304,8 @@ int config_verify( marfs_config* config, const char* tgtNS, char MDALcheck, char
          }
          // verify all reference dirs of this NS
          //    skip this if we're in ThE gHoSt DiMeNsIoN!!!!
-         else if ( !(pos.ns->ghsource) ){
+         //    OR if MDAL checks were entirely skipped
+         else if ( !(pos.ns->ghsource)  &&  MDALcheck ){
             size_t curref = 0;
             char anyerror = 0;
             for ( ; curref < pos.ns->prepo->metascheme.refnodecount; curref++ ) {
@@ -3293,8 +3343,35 @@ int config_verify( marfs_config* config, const char* tgtNS, char MDALcheck, char
                         // create the final dir with full global access
                         mkdirres = curmdal->createrefdir( nsctxt, rfullpath, S_IRWXU | S_IWOTH | S_IXOTH );
                      }
-                     // ignore any EEXIST errors, at this point
-                     if ( mkdirres  &&  errno == EEXIST ) { mkdirres = 0; errno = 0; }
+                     // ignore any EEXIST errors, and stat the target instead
+                     if ( mkdirres  &&  errno == EEXIST ) {
+                        mkdirres = 0;
+                        errno = 0;
+                        // stat the reference dir
+                        struct stat stval;
+                        mkdirres = curmdal->statref( nsctxt, rfullpath, &(stval) );
+                        if ( mkdirres == 0 ) {
+                           if ( rparse ) {
+                              // check for any group/other perms besides global execute
+                              if ( stval.st_mode & S_IRWXG  ||
+                                   stval.st_mode & S_IROTH  ||
+                                   stval.st_mode & S_IWOTH  ||
+                                   !(stval.st_mode & S_IXOTH) ) {
+                                 LOG( LOG_ERR, "Intermediate dir has unexpected perms: \"%s\"\n", rfullpath );
+                                 mkdirres = -1;
+                              }
+                           }
+                           else {
+                              // check for write/execute global perms
+                              if ( stval.st_mode & S_IROTH  ||
+                                   !(stval.st_mode & S_IWOTH)  ||
+                                   !(stval.st_mode & S_IXOTH) ) {
+                                 LOG( LOG_ERR, "Terminating dir has unexpected perms: \"%s\"\n", rfullpath );
+                                 mkdirres = -1;
+                              }
+                           }
+                        }
+                     }
                   }
                   else {
                      // stat the reference dir
@@ -3379,7 +3456,7 @@ int config_verify( marfs_config* config, const char* tgtNS, char MDALcheck, char
       }
       else {
          // proceed back up to the parent of this space
-         if ( pos.ns->pnamespace  &&  config_enterns( &pos, pos.ns->pnamespace, "..", 0 ) ) {
+         if ( config_enterns( &pos, pos.ns->pnamespace, "..", 0 ) < 0 ) {
             LOG( LOG_ERR, "Failed to transition to the parent of current NS\n" );
             umask(oldmask); // reset umask
             free( vrepos );
@@ -3659,7 +3736,7 @@ int config_traverse( marfs_config* config, marfs_position* pos, char** subpath, 
                   pos->depth = 0;
                   if ( pos->ns != config->rootns ) {
                      // we need to create a fresh MDAL_CTXT, referencing the rootNS
-                     if ( mdal->destroyctxt( pos->ctxt ) ) {
+                     if ( pos->ctxt  &&  mdal->destroyctxt( pos->ctxt ) ) {
                         // nothing to do, besides complain
                         LOG( LOG_WARNING, "Failed to destory MDAL_CTXT of NS \"%s\"\n", pos->ns->idstr );
                      }

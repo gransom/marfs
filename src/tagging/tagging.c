@@ -75,13 +75,19 @@ GNU licenses can be found at http://www.gnu.org/licenses/.
 
 #define FTAG_VERSION_HEADER "VER"
 #define FTAG_STREAMINFO_HEADER "STM"
+#define FTAG_REFTREE_HEADER "REF"
 #define FTAG_FILEPOSITION_HEADER "POS"
 #define FTAG_DATACONTENT_HEADER "DAT"
 
+#define RTAG_NAME "MARFS-REBUILD" // definied here, due to variability ( see rtag_getname() )
 #define RTAG_VERSION_HEADER "VER"
 #define RTAG_STRIPEINFO_HEADER "STP"
 #define RTAG_DATAHEALTH_HEADER "DHLTH"
 #define RTAG_METAHEALTH_HEADER "MHLTH"
+
+#define GCTAG_VERSION_HEADER "VER"
+#define GCTAG_SKIP_HEADER "SKIP"
+#define GCTAG_PROGRESS_HEADER "PROG"
 
 
 //   -------------   INTERNAL FUNCTIONS    -------------
@@ -225,6 +231,38 @@ int ftag_initstr( FTAG* ftag, char* ftagstr ) {
       LOG( LOG_ERR, "Expected two stream object values (objfiles/objsize), but found %d\n", (int)foundvals );
       return -1;
    }
+   // parse reference tree info
+   if ( strncmp( parse, FTAG_REFTREE_HEADER"(", strlen(FTAG_REFTREE_HEADER"(") ) ) {
+      LOG( LOG_ERR, "Failed to locate reference tree info header\n" );
+      return -1;
+   }
+   parse += strlen( FTAG_REFTREE_HEADER"(" );
+   foundvals = 0;
+   while ( *parse != '\0' ) {
+      int* tgtval = NULL;
+      if ( *parse == 'B' ) { tgtval = &(ftag->refbreadth); }
+      else if ( *parse == 'D' ) { tgtval = &(ftag->refdepth); }
+      else if ( *parse == 'd' ) { tgtval = &(ftag->refdigits); }
+      else { LOG( LOG_ERR, "Unrecognized ref tree value tag: \"%c\"\n", *parse ); return -1; }
+      parseval = strtoull( parse + 1, &(endptr), 10 );
+      if ( parseval > INT_MAX ) {
+         LOG( LOG_ERR, "Parsed ref tree value exceeds size limits: %llu\n", parseval );
+         return -1;
+      }
+      *tgtval = (int)parseval;
+      LOG( LOG_INFO, "Parsed REFTREE '%c' value of %d\n", *parse, *tgtval );
+      foundvals++;
+      if ( *endptr != '-'  &&  *endptr != ')' ) {
+         LOG( LOG_ERR, "Unrecognized stream value format\n" );
+         return -1;
+      }
+      parse = endptr + 1; // skip over the separator char
+      if ( *endptr == ')' ) { break; }
+   }
+   if ( foundvals != 3 ) {
+      LOG( LOG_ERR, "Expected three reference tree values (breadth/depth/digits), but found %d\n", (int)foundvals );
+      return -1;
+   }
    // parse file position info
    if ( strncmp( parse, FTAG_FILEPOSITION_HEADER"(", strlen(FTAG_FILEPOSITION_HEADER"(") ) ) {
       LOG( LOG_ERR, "Failed to locate file position header\n" );
@@ -245,15 +283,19 @@ int ftag_initstr( FTAG* ftag, char* ftagstr ) {
       }
       switch ( *parse ) {
          case 'f':
+            LOG( LOG_INFO, "Parsed FileNo value of %llu\n", parseval );
             ftag->fileno = parseval;
             break;
          case 'o':
+            LOG( LOG_INFO, "Parsed ObjNo value of %llu\n", parseval );
             ftag->objno = parseval;
             break;
          case '@':
+            LOG( LOG_INFO, "Parsed Offset value of %llu\n", parseval );
             ftag->offset = parseval;
             break;
          case 'e':
+            LOG( LOG_INFO, "Parsed EOS value of %llu\n", parseval );
             if ( parseval == 1 ) {
                ftag->endofstream = 1;
             }
@@ -287,34 +329,42 @@ int ftag_initstr( FTAG* ftag, char* ftagstr ) {
    while ( *parse != '\0' ) {
       // check for string values
       if ( strncmp( parse, "INIT", 4 ) == 0 ) {
+         LOG( LOG_INFO, "Parsed 'INIT' datastate\n" );
          ftag->state = FTAG_INIT | ( ftag->state & ~(FTAG_DATASTATE) );
          endptr = parse + 4;
       }
       else if ( strncmp( parse, "SIZED", 5 ) == 0 ) {
+         LOG( LOG_INFO, "Parsed 'SIZED' datastate\n" );
          ftag->state = FTAG_SIZED | ( ftag->state & ~(FTAG_DATASTATE) );
          endptr = parse + 5;
       }
       else if ( strncmp( parse, "FIN", 3 ) == 0 ) {
+         LOG( LOG_INFO, "Parsed 'FIN' datastate\n" );
          ftag->state = FTAG_FIN | ( ftag->state & ~(FTAG_DATASTATE) );
          endptr = parse + 3;
       }
       else if ( strncmp( parse, "COMP", 4 ) == 0 ) {
+         LOG( LOG_INFO, "Parsed 'COMP' datastate\n" );
          ftag->state = FTAG_COMP | ( ftag->state & ~(FTAG_DATASTATE) );
          endptr = parse + 4;
       }
       else if ( strncmp( parse, "RO", 2 ) == 0 ) {
+         LOG( LOG_INFO, "Parsed 'READ-ONLY' dataperms\n" );
          ftag->state = FTAG_READABLE | ( ftag->state & FTAG_DATASTATE );
          endptr = parse + 2;
       }
       else if ( strncmp( parse, "WO", 2 ) == 0 ) {
+         LOG( LOG_INFO, "Parsed 'WRITE-ONLY' dataperms\n" );
          ftag->state = FTAG_WRITEABLE | ( ftag->state & FTAG_DATASTATE );
          endptr = parse + 2;
       }
       else if ( strncmp( parse, "RW", 2 ) == 0 ) {
+         LOG( LOG_INFO, "Parsed 'READ-WRITE' dataperms\n" );
          ftag->state = (FTAG_WRITEABLE | FTAG_READABLE) | ( ftag->state & FTAG_DATASTATE );
          endptr = parse + 2;
       }
       else if ( strncmp( parse, "NO", 2 ) == 0 ) {
+         LOG( LOG_INFO, "Parsed 'NO-ACCESS' dataperms\n" );
          ftag->state = ( ftag->state & FTAG_DATASTATE );
          endptr = parse + 2;
       }
@@ -325,7 +375,7 @@ int ftag_initstr( FTAG* ftag, char* ftagstr ) {
             LOG( LOG_ERR, "File position value \'%c\' exceeds size limits\n", *parse );
             return -1;
          }
-         LOG( LOG_INFO, "Parsed \'%c\' value of %llu\n", *parse, parseval );
+         LOG( LOG_INFO, "Parsed DATACON \'%c\' value of %llu\n", *parse, parseval );
          switch ( *parse ) {
             case 'n':
                ftag->protection.N = parseval;
@@ -427,6 +477,20 @@ size_t ftag_tostr( const FTAG* ftag, char* tgtstr, size_t len ) {
    else { len = 0; }
    totsz += prres;
 
+   // output reference tree info
+   prres = snprintf( tgtstr, len, "%s(B%d-D%d-d%d)",
+                     FTAG_REFTREE_HEADER,
+                     ftag->refbreadth,
+                     ftag->refdepth,
+                     ftag->refdigits );
+   if ( prres < 1 ) {
+      LOG( LOG_ERR, "Failed to output reference tree info string\n" );
+      return 0;
+   }
+   if ( len > prres ) { len -= prres; tgtstr += prres; }
+   else { len = 0; }
+   totsz += prres;
+
    // output file position info
    prres = snprintf( tgtstr, len, "%s(f%zu-o%zu-@%zu-e%d)", FTAG_FILEPOSITION_HEADER, ftag->fileno, ftag->objno, ftag->offset, (int)(ftag->endofstream) );
    if ( prres < 1 ) {
@@ -501,6 +565,9 @@ int ftag_cmp( const FTAG* ftag1, const FTAG* ftag2 ) {
         ftag1->minorversion != ftag2->minorversion            ||
         ftag1->objfiles != ftag2->objfiles                    ||
         ftag1->objsize != ftag2->objsize                      ||
+        ftag1->refbreadth != ftag2->refbreadth                ||
+        ftag1->refdepth != ftag2->refdepth                    ||
+        ftag1->refdigits != ftag2->refdigits                  ||
         ftag1->fileno != ftag2->fileno                        ||
         ftag1->objno != ftag2->objno                          ||
         ftag1->offset != ftag2->offset                        ||
@@ -636,7 +703,7 @@ size_t ftag_repackmarker( const FTAG* ftag, char* tgtstr, size_t len ) {
       if ( *parse == '|' ) { *parse = '#'; }
       parse++;
    }
-   size_t retval = snprintf( tgtstr, len, "%s|%s|%zuREPACK", ftag->ctag, sanstream, ftag->objno );
+   size_t retval = snprintf( tgtstr, len, "%s|%s|%zuREPACK", ftag->ctag, sanstream, ftag->fileno );
    free( sanstream );
    return retval;
 }
@@ -743,6 +810,32 @@ size_t ftag_datatgt( const FTAG* ftag, char* tgtstr, size_t len ) {
 }
 
 // MARFS REBUILD TAG  --  attached to damaged marfs files, providing rebuild info
+
+/**
+ * Generate the appropraite RTAG name value for a specific data object
+ * @param size_t objno : Object number associated with the RTAG
+ * @return char* : String name of the RTAG value, or NULL on failure
+ *                 NOTE -- it is the caller's responsibility to free this
+ */
+char* rtag_getname( size_t objno ) {
+   // identify the rebuild tag name
+   ssize_t rtagnamelen = snprintf( NULL, 0, "%s-%zu", RTAG_NAME, objno );
+   if ( rtagnamelen < 1 ) {
+      LOG( LOG_ERR, "Failed to identify the length of rebuild tag for object %zu\n", objno );
+      return NULL;
+   }
+   char* rtagname = malloc( sizeof(char) * (rtagnamelen + 1) );
+   if ( rtagname == NULL ) {
+      LOG( LOG_ERR, "Failed to allocate space for rebuild tag of length %zd\n", rtagnamelen );
+      return NULL;
+   }
+   if ( snprintf( rtagname, rtagnamelen + 1, "%s-%zu", RTAG_NAME, objno ) != rtagnamelen ) {
+      LOG( LOG_ERR, "Rebuild tag name has inconsistent length\n" );
+      free(rtagname);
+      return NULL;
+   }
+   return rtagname;
+}
 
 /**
  * Initialize a ne_state value based on the provided string value
@@ -1032,6 +1125,199 @@ size_t rtag_tostr( const ne_state* rtag, size_t stripewidth, char* tgtstr, size_
    if ( len > prres ) { len -= prres; tgtstr += prres; }
    else { len = 0; }
    totsz += prres;
+
+   return totsz;
+}
+
+
+// MARFS Garbage Collection TAG  -- attached to files when subsequent datastream references have been deleted
+
+/**
+ * Initialize a GCTAG based on the provided string value
+ * @param GCTAG* gctag : Reference to the GCTAG structure to be populated
+ * @param const char* gctagstr : Reference to the string to be parsed
+ * @return int : Zero on success, or -1 on failure
+ */
+int gctag_initstr( GCTAG* gctag, char* gctagstr ) {
+   // check args
+   if ( gctag == NULL ) {
+      LOG( LOG_ERR, "Received a NULL gctag arg\n" );
+      errno = EINVAL;
+      return -1;
+   }
+   if ( gctagstr == NULL ) {
+      LOG( LOG_ERR, "Received a NULL gctagstr arg\n" );
+      errno = EINVAL;
+      return -1;
+   }
+   // parse version info first
+   const char* parse = gctagstr;
+   if ( strncmp( parse, GCTAG_VERSION_HEADER "(", strlen(GCTAG_VERSION_HEADER) + 1 ) ) {
+      LOG( LOG_ERR, "Unexpected version header for GCTAG string\n" );
+      errno = EINVAL;
+      return -1;
+   }
+   parse += strlen(GCTAG_VERSION_HEADER) + 1;
+   char* endptr = NULL;
+   unsigned long long parseval = strtoull( parse, &(endptr), 10 );
+   if ( endptr == NULL  ||  *endptr != '.'  ||  parseval == ULONG_MAX ) {
+      LOG( LOG_ERR, "Failed to parse major version value of GCTAG\n" );
+      errno = EINVAL;
+      return -1;
+   }
+   if ( parseval != GCTAG_CURRENT_MAJORVERSION ) {
+      LOG( LOG_ERR, "Unexpected GCTAG major version: %llu\n", parseval );
+      errno = EINVAL;
+      return -1;
+   }
+   parse = endptr + 1;
+   parseval = strtoull( parse, &(endptr), 10 );
+   if ( *endptr != ')' ) {
+      LOG( LOG_ERR, "GCTAG version string has unexpected format\n" );
+      errno = EINVAL;
+      return -1;
+   }
+   if ( parseval != GCTAG_CURRENT_MINORVERSION ) {
+      LOG( LOG_ERR, "Unexpected GCTAG minor version: %llu\n", parseval );
+      errno = EINVAL;
+      return -1;
+   }
+   parse = endptr + 1;
+   // parse skip info
+   if ( strncmp( parse, GCTAG_SKIP_HEADER "(", strlen(GCTAG_SKIP_HEADER) + 1 ) ) {
+      LOG( LOG_ERR, "Unexpected SKIP header for GCTAG string\n" );
+      errno = EINVAL;
+      return -1;
+   }
+   parse += strlen(GCTAG_SKIP_HEADER) + 1;
+   endptr = NULL;
+   parseval = strtoull( parse, &(endptr), 10 );
+   if ( endptr == NULL  ||  *endptr != '|'  ||  parseval == ULONG_MAX ) {
+      LOG( LOG_ERR, "Failed to parse refcnt value of GCTAG\n" );
+      errno = EINVAL;
+      return -1;
+   } // tag populated later
+   parse = endptr + 1;
+   char eos = 0;
+   if ( *parse == 'E' ) {
+      eos = 1;
+   }
+   else if ( *parse != '-' ) {
+      LOG( LOG_ERR, "GCTAG has inappriate EOS value\n" );
+      errno = EINVAL;
+      return -1;
+   }
+   parse++;
+   if ( *parse != ')' ) {
+      LOG( LOG_ERR, "Unexpected tail string of SKIP stanza\n" );
+      errno = EINVAL;
+      return -1;
+   }
+   parse++;
+   // potentially parse PROGRESS stanza
+   char delzero = 0;
+   char inprog = 0;
+   if ( *parse != '\0' ) {
+      // parse stanza header
+      if ( strncmp( parse, GCTAG_PROGRESS_HEADER "(", strlen(GCTAG_PROGRESS_HEADER) + 1 ) ) {
+         LOG( LOG_ERR, "Unexpected PROGRESS header for GCTAG string\n" );
+         errno = EINVAL;
+         return -1;
+      }
+      parse += strlen(GCTAG_PROGRESS_HEADER) + 1;
+      // parse delzero value
+      if ( *parse == 'D' ) {
+         delzero = 1;
+      }
+      else if ( *parse != '-' ) {
+         LOG( LOG_ERR, "GCTAG has inappriate DEL-ZERO value\n" );
+         errno = EINVAL;
+         return -1;
+      }
+      parse++;
+      if ( *parse != '|' ) {
+         LOG( LOG_ERR, "GCTAG has inappriate PROGRESS stanza format\n" );
+         errno = EINVAL;
+         return -1;
+      }
+      parse++;
+      // parse inprog value
+      if ( *parse == 'I' ) {
+         inprog = 1;
+      }
+      else if ( *parse != '-' ) {
+         LOG( LOG_ERR, "GCTAG has inappriate INPROG value\n" );
+         errno = EINVAL;
+         return -1;
+      }
+      parse++;
+      if ( *parse != ')' ) {
+         LOG( LOG_ERR, "GCTAG has inappriate PROGRESS stanza tail\n" );
+         errno = EINVAL;
+         return -1;
+      }
+      parse++;
+   }
+   gctag->refcnt = (size_t) parseval;
+   gctag->eos = eos;
+   gctag->delzero = delzero;
+   gctag->inprog = inprog;
+   return 0;
+}
+
+/**
+ * Populate a string based on the provided GCTAG
+ * @param const GCTAG* gctag : Reference to the GCTAG structure to pull values from
+ * @param char* tgtstr : Reference to the string to be populated
+ * @param size_t len : Allocated length of the target length
+ * @return size_t : Length of the produced string ( excluding NULL-terminator ), or zero if
+ *                  an error occurred.
+ *                  NOTE -- if this value is >= the length of the provided buffer, this
+ *                  indicates that insufficint buffer space was provided and the resulting
+ *                  output string was truncated.
+ */
+size_t gctag_tostr( GCTAG* gctag, char*tgtstr, size_t len ) {
+   // check for NULL args
+   if ( gctag == NULL ) {
+      LOG( LOG_ERR, "Received a NULL ne_state reference\n" );
+      errno = EINVAL;
+      return 0;
+   }
+
+   // keep track of total string length, even if we can't output that much
+   size_t totsz = 0;
+
+   // output version info first
+   int prres = snprintf( tgtstr, len, "%s(%u.%.3u)", GCTAG_VERSION_HEADER, GCTAG_CURRENT_MAJORVERSION, GCTAG_CURRENT_MINORVERSION );
+   if ( prres < 1 ) {
+      LOG( LOG_ERR, "Failed to output version info string\n" );
+      return 0;
+   }
+   if ( len > prres ) { len -= prres; tgtstr += prres; }
+   else { len = 0; }
+   totsz += prres;
+   // output skip info
+   prres = snprintf( tgtstr, len, "%s(%zu|%c)", GCTAG_SKIP_HEADER, gctag->refcnt, (gctag->eos) ? 'E' : '-' );
+   if ( prres < 1 ) {
+      LOG( LOG_ERR, "Failed to output refcnt value %zu\n", gctag->refcnt );
+      return 0;
+   }
+   if ( len > prres ) { len -= prres; tgtstr += prres; }
+   else { len = 0; }
+   totsz += prres;
+   // potentially output inprog and delzero flag
+   if ( gctag->inprog  ||  gctag->delzero ) {
+      prres = snprintf( tgtstr, len, "%s(%c|%c)", GCTAG_PROGRESS_HEADER,
+                                                   (gctag->delzero) ? 'D' : '-',
+                                                   (gctag->inprog) ? 'I' : '-' );
+      if ( prres < 1 ) {
+         LOG( LOG_ERR, "Failed to output refcnt value %zu\n", gctag->refcnt );
+         return 0;
+      }
+      if ( len > prres ) { len -= prres; tgtstr += prres; }
+      else { len = 0; }
+      totsz += prres;
+   }
 
    return totsz;
 }
