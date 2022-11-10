@@ -623,9 +623,6 @@ int fuse_read(const char *path, char *buf, size_t size, off_t offset, struct fus
       return -EBADF;
     }
   }
-  else {
-    memset(&u_ctxt, 0, sizeof(struct user_ctxt_struct));
-    enter_user(&u_ctxt, fuse_get_context()->uid, fuse_get_context()->gid, 0);
 
   struct user_ctxt_struct u_ctxt;
   memset(&u_ctxt, 0, sizeof(struct user_ctxt_struct));
@@ -641,9 +638,7 @@ int fuse_read(const char *path, char *buf, size_t size, off_t offset, struct fus
   }
   else { ret = (int)rres; }
 
-  if (ffi->fh) {
-    exit_user(&u_ctxt);
-  }
+  exit_user(&u_ctxt);
 
   if ( ret >= 0 ) { LOG( LOG_INFO, "Successfully read %d bytes\n", ret ); }
   else { LOG( LOG_ERR, "Read of %zd bytes failed (%s)\n", size, strerror(errno) ); }
