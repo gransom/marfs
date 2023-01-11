@@ -1153,7 +1153,7 @@ char* resourcelog_genlogpath( char create, const char* logroot, const char* iter
    }
    // populate the path root
    ssize_t lrootlen = snprintf( path, pathlen + 1, "%s", logroot );
-   if ( lrootlen < 1  ||  lrootlen >= pathlen ) {
+   if ( lrootlen < 1  ||  lrootlen > pathlen ) {
       LOG( LOG_ERR, "Failed to populate logfile root path\n" );
       if ( nspath ) { free( nspath ); }
       free( path );
@@ -1174,7 +1174,7 @@ char* resourcelog_genlogpath( char create, const char* logroot, const char* iter
    }
    // populate the path iteration
    ssize_t iterlen = snprintf( path + lrootlen, (pathlen - lrootlen) + 1, "/%s", iteration );
-   if ( iterlen < 1  ||  iterlen >= (pathlen - lrootlen) ) {
+   if ( iterlen < 1  ||  iterlen > (pathlen - lrootlen) ) {
       LOG( LOG_ERR, "Failed to populate logfile iteration path: \"%s\"\n", iteration );
       if ( nspath ) { free( nspath ); }
       free( path );
@@ -1194,7 +1194,7 @@ char* resourcelog_genlogpath( char create, const char* logroot, const char* iter
    }
    // populate the path ns
    ssize_t nslen = snprintf( path + lrootlen + iterlen, (pathlen - (lrootlen + iterlen)) + 1, "/%s", nspath );
-   if ( nslen < 1  ||  nslen >= ((pathlen - lrootlen) - iterlen) ) {
+   if ( nslen < 1  ||  nslen > ((pathlen - lrootlen) - iterlen) ) {
       LOG( LOG_ERR, "Failed to populate NS path value: \"%s\"\n", nspath );
       free( nspath );
       free( path );
@@ -1576,9 +1576,12 @@ int resourcelog_init( RESOURCELOG* resourcelog, const char* logpath, resourcelog
  * NOTE -- This function is intended for picking up state from a previously aborted run.
  * @param RESOURCELOG* inputlog : Source inputlog to be read from
  * @param RESOURCELOG* outputlog : Destination outputlog to be written to
+ * @param int (*filter)( const opinfo* op ) : Function pointer defining an operation filter ( ignored if NULL )
+ *                                            *param const opinfo* : Reference to the op to potentially include
+ *                                            *return int : Zero if the op should be included, non-zero if not
  * @return int : Zero on success, or -1 on failure
  */
-int resourcelog_replay( RESOURCELOG* inputlog, RESOURCELOG* outputlog ) {
+int resourcelog_replay( RESOURCELOG* inputlog, RESOURCELOG* outputlog, int (*filter)( const opinfo* op ) ) {
    // check for invalid args
    if ( inputlog == NULL  ||  outputlog == NULL ) {
       LOG( LOG_ERR, "Received a NULL resourcelog reference\n" );
@@ -1590,9 +1593,8 @@ int resourcelog_replay( RESOURCELOG* inputlog, RESOURCELOG* outputlog ) {
       errno = EINVAL;
       return -1;
    }
-   if ( (*inputlog)->type != ( RESOURCE_MODIFY_LOG | RESOURCE_READ_LOG )  ||
-        (*outputlog)->type != RESOURCE_MODIFY_LOG ) {
-      LOG( LOG_ERR, "Invalid resourcelog type values\n" );
+   if ( !((*inputlog)->type & RESOURCE_READ_LOG) ) {
+      LOG( LOG_ERR, "Invalid input resourcelog type values\n" );
       errno = EINVAL;
       return -1;
    }
@@ -1622,26 +1624,32 @@ int resourcelog_replay( RESOURCELOG* inputlog, RESOURCELOG* outputlog ) {
          resourcelog_freeopinfo( parsedop );
          return -1;
       }
-      // incorporate the op into our current state
-      char dofree = 0;
-      if ( processopinfo( outrsrclog, parsedop, NULL, &(dofree) ) < 0 ) {
-         LOG( LOG_ERR, "Failed to process lines from old logfile: \"%s\"\n", inrsrclog->logfilepath );
-         pthread_mutex_unlock( &(inrsrclog->lock) );
-         pthread_mutex_unlock( &(outrsrclog->lock) );
-         resourcelog_freeopinfo( dupop );
-         resourcelog_freeopinfo( parsedop );
-         return -1;
-      }
-      // duplicate this op into our output logfile ( must use duplicate, as parsedop->next may be modified )
-      if ( printlogline( outrsrclog->logfile, dupop ) ) {
-         LOG( LOG_ERR, "Failed to duplicate op from input logfile \"%s\" into active log: \"%s\"\n",
-              inrsrclog->logfilepath, outrsrclog->logfilepath );
-         pthread_mutex_unlock( &(inrsrclog->lock) );
-         pthread_mutex_unlock( &(outrsrclog->lock) );
-         resourcelog_freeopinfo( dupop );
-         if ( dofree )
-            resourcelog_freeopinfo( parsedop );
-         return -1;
+      char dofree = 1;
+      // check our filter
+      if ( filter == NULL  ||  filter( dupop ) == 0 ) {
+         // incorporate the op into our current state
+         if ( (outrsrclog->type & ~(RESOURCE_READ_LOG)) == RESOURCE_MODIFY_LOG ) {
+            dofree = 0;
+            if ( processopinfo( outrsrclog, parsedop, NULL, &(dofree) ) < 0 ) {
+               LOG( LOG_ERR, "Failed to process lines from old logfile: \"%s\"\n", inrsrclog->logfilepath );
+               pthread_mutex_unlock( &(inrsrclog->lock) );
+               pthread_mutex_unlock( &(outrsrclog->lock) );
+               resourcelog_freeopinfo( dupop );
+               resourcelog_freeopinfo( parsedop );
+               return -1;
+            }
+         }
+         // duplicate this op into our output logfile ( must use duplicate, as parsedop->next may be modified )
+         if ( printlogline( outrsrclog->logfile, dupop ) ) {
+            LOG( LOG_ERR, "Failed to duplicate op from input logfile \"%s\" into active log: \"%s\"\n",
+                 inrsrclog->logfilepath, outrsrclog->logfilepath );
+            pthread_mutex_unlock( &(inrsrclog->lock) );
+            pthread_mutex_unlock( &(outrsrclog->lock) );
+            resourcelog_freeopinfo( dupop );
+            if ( dofree )
+               resourcelog_freeopinfo( parsedop );
+            return -1;
+         }
       }
       resourcelog_freeopinfo( dupop );
       if ( dofree )
@@ -1659,7 +1667,7 @@ int resourcelog_replay( RESOURCELOG* inputlog, RESOURCELOG* outputlog ) {
    // cleanup the inputlog
    *inputlog = NULL;
    pthread_mutex_unlock( &(inrsrclog->lock) );
-   if ( resourcelog_term( &(inrsrclog), NULL, NULL ) ) {
+   if ( resourcelog_term( &(inrsrclog), NULL, 1 ) ) {
       LOG( LOG_ERR, "Failed to cleanup input logfile\n" );
       pthread_mutex_unlock( &(outrsrclog->lock) );
       return -1;
@@ -1753,20 +1761,20 @@ int resourcelog_processop( RESOURCELOG* resourcelog, opinfo* op, char* progress 
       return -1;
    }
    // special check for RECORD log
-   if ( rsrclog->type == RESOURCE_RECORD_LOG ) {
-      // traverse the op chain to ensure we don't have any completions slipping into this RECORD log
-      opinfo* parseop = dupop;
-      while ( parseop ) {
-         if ( parseop->start == 0 ) {
-            LOG( LOG_ERR, "Detected op completion struct in chain for RECORD log\n" );
-            errno = EINVAL;
-            pthread_mutex_unlock( &(rsrclog->lock) );
-            resourcelog_freeopinfo( dupop );
-            return -1;
-         }
-         parseop = parseop->next;
-      }
-   }
+//   if ( rsrclog->type == RESOURCE_RECORD_LOG ) {
+//      // traverse the op chain to ensure we don't have any completions slipping into this RECORD log
+//      opinfo* parseop = dupop;
+//      while ( parseop ) {
+//         if ( parseop->start == 0 ) {
+//            LOG( LOG_ERR, "Detected op completion struct in chain for RECORD log\n" );
+//            errno = EINVAL;
+//            pthread_mutex_unlock( &(rsrclog->lock) );
+//            resourcelog_freeopinfo( dupop );
+//            return -1;
+//         }
+//         parseop = parseop->next;
+//      }
+//   }
    // incorporate operation info
    char dofree = 0;
    if ( processopinfo( rsrclog, dupop, progress, &(dofree) ) ) {
@@ -1862,11 +1870,11 @@ int resourcelog_readop( RESOURCELOG* resourcelog, opinfo** op ) {
  * NOTE -- this will fail if there are currently any ops in flight
  * @param RESOURCELOG* resourcelog : Statelog to be terminated
  * @param operation_summary* summary : Reference to be populated with summary values ( ignored if NULL )
- * @param const char* log_preservation_tgt : FS location where the state logfile should be relocated to
- *                                           If NULL, the file is deleted
+ * @param char delete : Flag indicating whether the logfile should be deleted on termination
+ *                      If non-zero, the file is deleted
  * @return int : Zero on success, 1 if the log was preserved due to errors, or -1 on failure
  */
-int resourcelog_term( RESOURCELOG* resourcelog, operation_summary* summary, const char* log_preservation_tgt ) {
+int resourcelog_term( RESOURCELOG* resourcelog, operation_summary* summary, char delete ) {
    // check for invalid args
    if ( resourcelog == NULL  ||  *resourcelog == NULL ) {
       LOG( LOG_ERR, "Received a NULL resourcelog reference\n" );
@@ -1892,15 +1900,7 @@ int resourcelog_term( RESOURCELOG* resourcelog, operation_summary* summary, cons
         rsrclog->summary.rebuild_failures  ||  rsrclog->summary.repack_failures ) { errpresent = 1; }
    // potentially record summary info
    if ( summary ) { *summary = rsrclog->summary; }
-   // potentially rename the logfile to the preservation tgt
-   if ( log_preservation_tgt ) { 
-      if ( rename( rsrclog->logfilepath, log_preservation_tgt ) ) {
-         LOG( LOG_ERR, "Failed to rename log file to final location: \"%s\"\n", log_preservation_tgt );
-         pthread_mutex_unlock( &(rsrclog->lock) );
-         return -1;
-      }
-   }
-   else if ( !(errpresent) ) {
+   if ( !(errpresent)  &&  delete ) {
       // if there were no errors recorded, just delete the logfile
       if ( unlink( rsrclog->logfilepath ) ) {
          LOG( LOG_ERR, "Failed to unlink log file: \"%s\"\n", rsrclog->logfilepath );

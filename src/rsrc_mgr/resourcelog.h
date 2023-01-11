@@ -164,14 +164,17 @@ char* resourcelog_genlogpath( char create, const char* logroot, const char* iter
 int resourcelog_init( RESOURCELOG* resourcelog, const char* logpath, resourcelog_type type, marfs_ns* ns );
 
 /**
- * Replay all operations from a given inputlog ( reading from a MODIFY log ) into a given 
+ * Replay all operations from a given inputlog ( reading from a MODIFY log ) into a given
  *  outputlog ( writing to a MODIFY log ), then delete and terminate the inputlog
  * NOTE -- This function is intended for picking up state from a previously aborted run.
  * @param RESOURCELOG* inputlog : Source inputlog to be read from
  * @param RESOURCELOG* outputlog : Destination outputlog to be written to
+ * @param int (*filter)( const opinfo* op ) : Function pointer defining an operation filter ( ignored if NULL )
+ *                                            *param const opinfo* : Reference to the op to potentially include
+ *                                            *return int : Zero if the op should be included, non-zero if not
  * @return int : Zero on success, or -1 on failure
  */
-int resourcelog_replay( RESOURCELOG* inputlog, RESOURCELOG* outputlog );
+int resourcelog_replay( RESOURCELOG* inputlog, RESOURCELOG* outputlog, int (*filter)( const opinfo* op ) );
 
 /**
  * Record that a certain number of threads are currently processing
@@ -202,11 +205,11 @@ int resourcelog_readop( RESOURCELOG* resourcelog, opinfo** op );
  * NOTE -- this will fail if there are currently any ops in flight
  * @param RESOURCELOG* resourcelog : Statelog to be terminated
  * @param operation_summary* summary : Reference to be populated with summary values ( ignored if NULL )
- * @param const char* log_preservation_tgt : FS location where the state logfile should be relocated to
- *                                           If NULL, the file is deleted
+ * @param char delete : Flag indicating whether the logfile should be deleted on termination
+ *                      If non-zero, the file is deleted
  * @return int : Zero on success, 1 if the log was preserved due to errors, or -1 on failure
  */
-int resourcelog_term( RESOURCELOG* resourcelog, operation_summary* summary, const char* log_preservation_tgt );
+int resourcelog_term( RESOURCELOG* resourcelog, operation_summary* summary, char delete );
 
 /**
  * Deallocate and finalize a given resourcelog without waiting for completion

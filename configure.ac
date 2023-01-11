@@ -77,8 +77,8 @@ AC_PROG_CC([mpicc mpiCC])
 AM_PROG_CC_C_O
 AC_PROG_LIBTOOL
 
-# default to empty flags, instead of "-g -O2"
-: ${CFLAGS=""}
+# default to "-g", instead of "-g -O2"
+CFLAGS="$CFLAGS -g"
 # AC_PROG_CC
 
 # AC_PROG_RANLIB
@@ -111,9 +111,11 @@ AC_CHECK_FUNCS([bzero ftruncate memset strerror strtol strtoul malloc])
 AXATTR_GET_FUNC_CHECK
 AXATTR_SET_FUNC_CHECK
 
+AC_CHECK_LIB([m], [log10], [], [AC_MSG_ERROR(["Could not locate libm!])])
 AC_CHECK_LIB([xml2], [xmlReadFile], [], [AC_MSG_ERROR(["Could not locate libxml2!"])])
 AC_CHECK_LIB([fuse], [fuse_main], [], [AC_MSG_ERROR(["Could not locate libfuse!"])])
-AC_CHECK_LIB([ne], [ne_init], [], [AC_MSG_ERROR(["Could not locate libne!"])])
+AC_CHECK_LIB([ne], [ne_init], [], [AC_MSG_ERROR(["Could not locate libne!  Please build and install the 'erasureUtils' repo.  If using a custom install location, you may need to add that 'lib' dir to your LDFLAGS='-L*' environment var."])])
+AC_CHECK_LIB([TQ], [tq_init], [], [AC_MSG_ERROR(["Could not locate libTQ!  Please build and install the 'erasureUtils' repo.  If using a custom install location, you may need to add that 'lib' dir to your LDFLAGS='-L*' environment var."])])
 AC_CHECK_LIB([mpi], [MPI_Abort], [], [AC_MSG_ERROR(["Could not locate libmpi!"])])
 
 PKG_CHECK_MODULES( XML, libxml-2.0 )
@@ -159,6 +161,7 @@ AC_CHECK_LIB([logging], [printf_log], [], [AC_MSG_ERROR(["Could not locate liblo
 #             [ AS_IF( [ x"${enableval}" =~ ^x\(.*,\)?all\(,.*\)?$ ], [AC_DEFINE( [DEBUG_ALL] )], [] ) ],
 #             [debug_all=no; debug_ne=no; debug_io=no; debug_dal=no; debug_tq=no])
 
+fulldebugstr=""
 AC_ARG_ENABLE( [debugALL],
                [ AS_HELP_STRING( [--enable-debugALL], [Enable all debug output] ) ],
                   [ AS_CASE( [ x"${enableval}" ],
@@ -167,7 +170,7 @@ AC_ARG_ENABLE( [debugALL],
                            [[ x[Ww]* ]],
                               [ AC_DEFINE( [DEBUG_ALL], [2], [Enable all debug output] ) ],
                            [ AC_DEFINE( [DEBUG_ALL], [1], [Enable all debug output] ) ]
-                  ) ], []
+                  ) && fulldebugstr="$fulldebugstr""ALL=\"$enableval\" " ], []
              )
 
 AC_ARG_ENABLE( [debugMDAL],
@@ -178,7 +181,7 @@ AC_ARG_ENABLE( [debugMDAL],
                            [[ x[Ww]* ]],
                               [ AC_DEFINE( [DEBUG_MDAL], [2], [Enable 'mdal'-subdir debug output] ) ],
                            [ AC_DEFINE( [DEBUG_MDAL], [1], [Enable 'mdal'-subdir debug output] ) ]
-                  ) ], []
+                  ) && fulldebugstr="$fulldebugstr""MDAL=\"$enableval\" " ], []
              )
 
 AC_ARG_ENABLE( [debugHASH],
@@ -189,7 +192,7 @@ AC_ARG_ENABLE( [debugHASH],
                            [[ x[Ww]* ]],
                               [ AC_DEFINE( [DEBUG_HASH], [2], [Enable 'hash'-subdir debug output] ) ],
                            [ AC_DEFINE( [DEBUG_HASH], [1], [Enable 'hash'-subdir debug output] ) ]
-                  ) ], []
+                  ) && fulldebugstr="$fulldebugstr""HASH=\"$enableval\" " ], []
              )
 
 AC_ARG_ENABLE( [debugCONFIG],
@@ -200,7 +203,7 @@ AC_ARG_ENABLE( [debugCONFIG],
                            [[ x[Ww]* ]],
                               [ AC_DEFINE( [DEBUG_CONFIG], [2], [Enable 'config'-subdir debug output] ) ],
                            [ AC_DEFINE( [DEBUG_CONFIG], [1], [Enable 'config'-subdir debug output] ) ]
-                  ) ], []
+                  ) && fulldebugstr="$fulldebugstr""CONFIG=\"$enableval\" " ], []
              )
 
 AC_ARG_ENABLE( [debugRECOVERY],
@@ -211,7 +214,7 @@ AC_ARG_ENABLE( [debugRECOVERY],
                            [[ x[Ww]* ]],
                               [ AC_DEFINE( [DEBUG_RECOVERY], [2], [Enable 'recovery'-subdir debug output] ) ],
                            [ AC_DEFINE( [DEBUG_RECOVERY], [1], [Enable 'recovery'-subdir debug output] ) ]
-                  ) ], []
+                  ) && fulldebugstr="$fulldebugstr""RECOVERY=\"$enableval\" " ], []
              )
 
 AC_ARG_ENABLE( [debugTAGGING],
@@ -222,7 +225,7 @@ AC_ARG_ENABLE( [debugTAGGING],
                            [[ x[Ww]* ]],
                               [ AC_DEFINE( [DEBUG_TAGGING], [2], [Enable 'tagging'-subdir debug output] ) ],
                            [ AC_DEFINE( [DEBUG_TAGGING], [1], [Enable 'tagging'-subdir debug output] ) ]
-                  ) ], []
+                  ) && fulldebugstr="$fulldebugstr""TAGGING=\"$enableval\" " ], []
              )
 
 AC_ARG_ENABLE( [debugDS],
@@ -233,7 +236,7 @@ AC_ARG_ENABLE( [debugDS],
                            [[ x[Ww]* ]],
                               [ AC_DEFINE( [DEBUG_DS], [2], [Enable 'ds'-subdir debug output] ) ],
                            [ AC_DEFINE( [DEBUG_DS], [1], [Enable 'ds'-subdir debug output] ) ]
-                  ) ], []
+                  ) && fulldebugstr="$fulldebugstr""DS=\"$enableval\" " ], []
              )
 
 AC_ARG_ENABLE( [debugRM],
@@ -244,7 +247,7 @@ AC_ARG_ENABLE( [debugRM],
                            [[ x[Ww]* ]],
                               [ AC_DEFINE( [DEBUG_RM], [2], [Enable 'rsrc_mgr'-subdir debug output] ) ],
                            [ AC_DEFINE( [DEBUG_RM], [1], [Enable 'rsrc_mgr'-subdir debug output] ) ]
-                  ) ], []
+                  ) && fulldebugstr="$fulldebugstr""RM=\"$enableval\" " ], []
              )
 
 AC_ARG_ENABLE( [debugAPI],
@@ -255,7 +258,7 @@ AC_ARG_ENABLE( [debugAPI],
                            [[ x[Ww]* ]],
                               [ AC_DEFINE( [DEBUG_API], [2], [Enable 'api'-subdir debug output] ) ],
                            [ AC_DEFINE( [DEBUG_API], [1], [Enable 'api'-subdir debug output] ) ]
-                  ) ], []
+                  ) && fulldebugstr="$fulldebugstr""API=\"$enableval\" " ], []
              )
 
 AC_ARG_ENABLE( [debugFUSE],
@@ -266,7 +269,7 @@ AC_ARG_ENABLE( [debugFUSE],
                            [[ x[Ww]* ]],
                               [ AC_DEFINE( [DEBUG_FUSE], [2], [Enable 'fuse'-subdir debug output] ) ],
                            [ AC_DEFINE( [DEBUG_FUSE], [1], [Enable 'fuse'-subdir debug output] ) ]
-                  ) ], []
+                  ) && fulldebugstr="$fulldebugstr""FUSE=\"$enableval\" " ], []
              )
 
 # debugging-output should go to syslog, instead of stdout/stderr?
@@ -295,9 +298,24 @@ AC_CONFIG_FILES([Makefile
                  src/config/Makefile
                  src/datastream/Makefile
                  src/api/Makefile
-                 src/rsrc_mgr/Makefile
                  src/fuse/Makefile
+                 src/rsrc_mgr/Makefile
+                 etc/Makefile
                ])
 
 AC_OUTPUT
+
+# let the user know the configuration
+
+cat << EOF
+
+marfs configuration
+#####################
+CC       : $CC
+CFLAGS   : $CFLAGS
+LDFLAGS  : $LDFLAGS
+LIBS     : $LIBS
+DEBUG    : $fulldebugstr
+
+EOF
 

@@ -112,11 +112,13 @@ int resourceinput_init( RESOURCEINPUT* resourceinput, marfs_position* pos, size_
    }
    if ( pthread_cond_init( &(rin->updated), NULL ) ) {
       LOG( LOG_ERR, "Failed to initialize 'complete' condition for new resourceinput\n" );
+      pthread_cond_destroy( &(rin->complete) );
       free( rin );
       return -1;
    }
    if ( pthread_mutex_init( &(rin->lock), NULL ) ) {
       LOG( LOG_ERR, "Failed to initialize lock for new resourceinput\n" );
+      pthread_cond_destroy( &(rin->updated) );
       pthread_cond_destroy( &(rin->complete) );
       free( rin );
       return -1;
@@ -254,11 +256,12 @@ int resourceinput_getnext( RESOURCEINPUT* resourceinput, opinfo** nextop, MDAL_S
       // check for completion of log
       if ( *nextop == NULL ) {
          LOG( LOG_INFO, "Statelog has been completely read\n" );
-         if ( resourcelog_term( &(rin->rlog), NULL, NULL ) ) {
+         if ( resourcelog_term( &(rin->rlog), NULL, 1 ) ) {
             // nothing to do but complain
             LOG( LOG_WARNING, "Failed to properly terminate input resourcelog\n" );
          }
          rin->rlog = NULL; // be certain this is NULLed out
+         pthread_cond_signal( &(rin->complete) );
       }
       else {
          // provide the read value
@@ -332,10 +335,11 @@ int resourceinput_purge( RESOURCEINPUT* resourceinput, size_t removeclients ) {
    rin->rlog = NULL; // be certain this is NULLed out
    // set ref range values to indicate completion
    rin->refindex = rin->refmax;
-   // set flag to indicate threads should prepare for termination
-   if ( rin->prepterm < 1 ) { rin->prepterm = 1; }
-   // decrement client counts
-   rin->clientcount -= removeclients;
+   // decrement client counts ( caller may not be using resourceinput_waitforterm() )
+   if ( removeclients ) {
+      LOG( LOG_INFO, "Removing %zu clients from the count ( %zu -> %zu )\n", removeclients, rin->clientcount, rin->clientcount - removeclients );
+      rin->clientcount -= removeclients;
+   }
    // make sure all threads wake up
    pthread_cond_broadcast( &(rin->updated) );
    pthread_cond_broadcast( &(rin->complete) );
@@ -392,7 +396,13 @@ int resourceinput_waitforterm( RESOURCEINPUT* resourceinput ) {
       LOG( LOG_ERR, "Failed to acquire resourceinput lock\n" );
       return -1;
    }
-   rin->clientcount--; // show that we are waiting
+   if ( rin->clientcount ) {
+      LOG( LOG_INFO, "Decrementing active client count from %zu to %zu\n", rin->clientcount, rin->clientcount - 1 );
+      rin->clientcount--; // show that we are waiting
+   }
+   else {
+      LOG( LOG_ERR, "ClientCount is already zeroed out, but this client is only now waiting!\n" );
+   }
    pthread_cond_signal( &(rin->complete) ); // signal the master proc to check status
    // wait for the master proc to signal us
    while ( rin->prepterm < 2 ) {
@@ -402,6 +412,7 @@ int resourceinput_waitforterm( RESOURCEINPUT* resourceinput ) {
          return -1;
       }
    }
+   LOG( LOG_INFO, "Incrementing active client count from %zu to %zu\n", rin->clientcount, rin->clientcount + 1 );
    rin->clientcount++; // show that we are exiting
    pthread_cond_signal( &(rin->complete) );
    pthread_mutex_unlock( &(rin->lock) );
@@ -473,6 +484,7 @@ int resourceinput_term( RESOURCEINPUT* resourceinput ) {
       return -1;
    }
    size_t origclientcount = rin->clientcount; // remember the total number of clients
+   LOG( LOG_INFO, "Synchronizing with %zu clients for termination\n", origclientcount );
    // signal clients to prepare for termination
    rin->prepterm = 1;
    pthread_cond_broadcast( &(rin->updated) );
@@ -483,6 +495,7 @@ int resourceinput_term( RESOURCEINPUT* resourceinput ) {
          return -1;
       }
    }
+   LOG( LOG_INFO, "All %zu clients are ready for termination\n", origclientcount );
    // signal clients to exit
    rin->prepterm = 2;
    pthread_cond_broadcast( &(rin->updated) );
@@ -493,9 +506,11 @@ int resourceinput_term( RESOURCEINPUT* resourceinput ) {
          return -1;
       }
    }
+   LOG( LOG_INFO, "All %zu clients have terminated\n", origclientcount );
    // begin destroying the structure
    *resourceinput = NULL;
    pthread_cond_destroy( &(rin->complete) );
+   pthread_cond_destroy( &(rin->updated) );
    pthread_mutex_unlock( &(rin->lock) );
    pthread_mutex_destroy( &(rin->lock) );
    // DO NOT free ctxt or NS
@@ -555,6 +570,7 @@ int resourceinput_abort( RESOURCEINPUT* resourceinput ) {
       LOG( LOG_WARNING, "Failed to abort input resourcelog\n" );
    }
    pthread_cond_destroy( &(rin->complete) );
+   pthread_cond_destroy( &(rin->updated) );
    if ( havelock ) { pthread_mutex_unlock( &(rin->lock) ); }
    pthread_mutex_destroy( &(rin->lock) );
    // DO NOT free ctxt or NS
@@ -616,7 +632,7 @@ int rthread_consumer_func( void** state, void** work_todo ) {
             *work_todo = NULL;
             tstate->fatalerror = 1;
             // ensure termination of all other threads ( avoids possible deadlock )
-            if ( resourceinput_purge( &(tstate->gstate->rinput), 1 ) ) {
+            if ( resourceinput_purge( &(tstate->gstate->rinput), 0 ) ) {
                LOG( LOG_WARNING, "Failed to purge resource input following fatal error\n" );
             }
             return -1;
@@ -722,6 +738,11 @@ int rthread_producer_func( void** state, void** work_tofill ) {
                   snprintf( tstate->errorstr, MAX_STR_BUFFER,
                             "Thread %u failed to log start of a REBUILD operation\n", tstate->tID );
                   resourcelog_freeopinfo( newop );
+                  tstate->fatalerror = 1;
+                  // ensure termination of all other threads ( avoids possible deadlock )
+                  if ( resourceinput_purge( &(tstate->gstate->rinput), 1 ) ) {
+                     LOG( LOG_WARNING, "Failed to purge resource input following fatal error\n" );
+                  }
                   return -1;
                }
             }
@@ -731,6 +752,11 @@ int rthread_producer_func( void** state, void** work_tofill ) {
                   snprintf( tstate->errorstr, MAX_STR_BUFFER,
                             "Thread %u failed to log start of a REPACK operation\n", tstate->tID );
                   if ( newop ) { resourcelog_freeopinfo( newop ); }
+                  tstate->fatalerror = 1;
+                  // ensure termination of all other threads ( avoids possible deadlock )
+                  if ( resourceinput_purge( &(tstate->gstate->rinput), 1 ) ) {
+                     LOG( LOG_WARNING, "Failed to purge resource input following fatal error\n" );
+                  }
                   return -1;
                }
             }
@@ -740,6 +766,11 @@ int rthread_producer_func( void** state, void** work_tofill ) {
                   snprintf( tstate->errorstr, MAX_STR_BUFFER,
                             "Thread %u failed to log start of a GC operation\n", tstate->tID );
                   if ( newop ) { resourcelog_freeopinfo( newop ); }
+                  tstate->fatalerror = 1;
+                  // ensure termination of all other threads ( avoids possible deadlock )
+                  if ( resourceinput_purge( &(tstate->gstate->rinput), 1 ) ) {
+                     LOG( LOG_WARNING, "Failed to purge resource input following fatal error\n" );
+                  }
                   return -1;
                }
             }
@@ -813,7 +844,9 @@ int rthread_producer_func( void** state, void** work_tofill ) {
                LOG( LOG_INFO, "Skipping rebuild marker file, as we are doing location-based rebuild: \"%s\"\n", reftgt );
             }
             else {
+               // note the rebuild candidate regardless, to give an indication of remaining count
                errno = 0;
+               tstate->report.rbldobjs++;
                newop = process_rebuildmarker( &(tstate->gstate->pos), reftgt, tstate->gstate->thresh.rebuildthreshold, tgtval );
                if ( newop == NULL  &&  errno != ETIME ) { // only ignore failure due to recently created marker file
                   LOG( LOG_ERR, "Thread %u failed to process rebuild marker \"%s\" of NS \"%s\"\n",
@@ -828,6 +861,22 @@ int rthread_producer_func( void** state, void** work_tofill ) {
                      LOG( LOG_WARNING, "Failed to purge resource input following fatal error\n" );
                   }
                   return -1;
+               }
+               else if ( newop ) {
+                  // log the new operation, before we distribute it
+                  if ( resourcelog_processop( &(tstate->gstate->rlog), newop, NULL ) ) {
+                     LOG( LOG_ERR, "Thread %u failed to log start of a marker REBUILD operation\n", tstate->tID );
+                     snprintf( tstate->errorstr, MAX_STR_BUFFER,
+                               "Thread %u failed to log start of a marker REBUILD operation\n", tstate->tID );
+                     resourcelog_freeopinfo( newop );
+                     tstate->fatalerror = 1;
+                     if ( reftgt ) { free( reftgt ); }
+                     // ensure termination of all other threads ( avoids possible deadlock )
+                     if ( resourceinput_purge( &(tstate->gstate->rinput), 1 ) ) {
+                        LOG( LOG_WARNING, "Failed to purge resource input following fatal error\n" );
+                     }
+                     return -1;
+                  }
                }
             }
          }

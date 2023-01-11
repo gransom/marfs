@@ -586,9 +586,9 @@ void process_rebuild( const marfs_position* pos, opinfo* op ) {
          return;
       }
       // open an object handle
-      ne_handle obj = ne_open( ds->nectxt, objname, location, op->ftag.protection, NE_REBUILD );
+      ne_handle obj = ne_open( ds->nectxt, objname, location, erasure, NE_REBUILD );
       if ( obj == NULL ) {
-         LOG( LOG_ERR, "Failed to open rebuild handle for object %zu of stream \"%s\"\n", tmptag.objno, tmptag.streamid );
+         LOG( LOG_ERR, "Failed to open rebuild handle for object \"%s\"\n", objname );
          op->errval = (errno) ? errno : ENOTRECOVERABLE;
          free( objname );
          return;
@@ -606,7 +606,8 @@ void process_rebuild( const marfs_position* pos, opinfo* op ) {
       while ( iteration < 2 ) {
          LOG( LOG_INFO, "Rebuilding object %zu of stream \"%s\" (attempt %d)\n",
                         tmptag.objno, tmptag.streamid, (int)iteration + 1 );
-         if ( ne_rebuild( obj, NULL, NULL ) < 0 ) {
+         int rebuildres = ne_rebuild( obj, NULL, NULL );
+         if ( rebuildres < 0 ) {
             LOG( LOG_ERR, "Failed to rebuild object %zu of stream \"%s\"\n", tmptag.objno, tmptag.streamid );
             op->errval = (errno) ? errno : ENOTRECOVERABLE;
             if ( ne_abort( obj ) ) {
@@ -615,6 +616,7 @@ void process_rebuild( const marfs_position* pos, opinfo* op ) {
             }
             return;
          }
+         else { break; }
          iteration++;
       }
       // check for excessive rebuild reattempts
@@ -729,7 +731,7 @@ int process_getfileinfo( const char* reftgt, char getxattrs, streamwalker walker
       errno = 0;
       MDAL_FHANDLE handle = mdal->openref( walker->pos.ctxt, reftgt, O_RDONLY, 0 );
       if ( handle == NULL ) {
-         if ( errno = ENOENT ) {
+         if ( errno == ENOENT ) {
             LOG( LOG_INFO, "Reference file does not exist: \"%s\"\n", reftgt );
             *filestate = 0;
             return 0;
@@ -847,7 +849,7 @@ int process_getfileinfo( const char* reftgt, char getxattrs, streamwalker walker
    errno = 0;
    // stat the file by path
    if ( mdal->statref( walker->pos.ctxt, reftgt, &(walker->stval) ) ) {
-      if ( errno = ENOENT ) {
+      if ( errno == ENOENT ) {
          LOG( LOG_INFO, "Reference file does not exist: \"%s\"\n", reftgt );
          *filestate = 0;
          return 0;
@@ -1154,6 +1156,24 @@ opinfo* process_rebuildmarker( marfs_position* pos, char* markerpath, time_t reb
       return NULL;
    }
    free( ftagstr );
+   // allocate health arrays for the rebuild info RTAG
+   rinfo->rtag.meta_status = calloc( sizeof(char), op->ftag.protection.N + op->ftag.protection.E );
+   if ( rinfo->rtag.meta_status == NULL ) {
+      LOG( LOG_ERR, "Failed to allocate rebuild info meta_status array\n" );
+      free( rinfo );
+      free( op );
+      ms->mdal->close( mhandle );
+      return NULL;
+   }
+   rinfo->rtag.data_status = calloc( sizeof(char), op->ftag.protection.N + op->ftag.protection.E );
+   if ( rinfo->rtag.data_status == NULL ) {
+      LOG( LOG_ERR, "Failed to allocate rebuild info data_status array\n" );
+      free( rinfo->rtag.meta_status );
+      free( rinfo );
+      free( op );
+      ms->mdal->close( mhandle );
+      return NULL;
+   }
    // generate the RTAG name
    char* rtagname = rtag_getname( objno );
    if ( rtagname == NULL ) {
@@ -1545,6 +1565,7 @@ int process_iteratestreamwalker( streamwalker walker, opinfo** gcops, opinfo** r
       }
       // pull info for the next reference target
       char filestate = -1;
+      char prevdelzero = walker->gctag.delzero;
       char haveftag = pullxattrs;
       if ( process_getfileinfo( reftgt, pullxattrs, walker, &(filestate) ) ) {
          LOG( LOG_ERR, "Failed to get info for reference target: \"%s\"\n", reftgt );
@@ -1617,7 +1638,7 @@ int process_iteratestreamwalker( streamwalker walker, opinfo** gcops, opinfo** r
             // we may need to delete the previous object IF we are GCing AND no active refs existed for that obj
             //    AND it is not an already a deleted object0
             if ( walker->gcthresh  &&  walker->activefiles == 0  &&
-                 ( walker->objno != 0  ||  walker->gctag.delzero == 0 ) ) {
+                 ( walker->objno != 0  ||  prevdelzero == 0 ) ) {
                // need to prepend an object deletion operation for the previous objno
                LOG( LOG_INFO, "Adding deletion op for object %zu\n", walker->objno );
                opinfo* optgt = NULL;
@@ -1646,7 +1667,6 @@ int process_iteratestreamwalker( streamwalker walker, opinfo** gcops, opinfo** r
                      return -1;
                   }
                   // NOTE -- don't increment count ( as we normally would ), as we aren't actually deleting another ref
-                  optgt->count += walker->gctag.refcnt;
                   delref_info* delrefinf = (delref_info*)optgt->extendedinfo;
                   delrefinf->delzero = 1;
                }
