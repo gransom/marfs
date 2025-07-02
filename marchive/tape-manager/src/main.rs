@@ -9,17 +9,17 @@
 /// This utility is meant to perform management 'tasks' for the orchestration of Marchive data objects
 /// stored on tape media.
 /// 
-/// The utility is intended to be on Marchive storage nodes ( separate instance per-node ) via a systemd
-/// unit wrapper.  It is assumed that only a single utility instance will be active on a host at a time
-/// ( systemd service unit wrapper should enforce this ).
+/// The utility is intended to be run on Marchive storage nodes ( separate instance per-node ) via a
+/// systemd unit wrapper.  It is assumed that only a single utility instance will be active on a
+/// host at a time ( systemd service unit wrapper should enforce this ).
 /// 
 /// Behavior of the utility is controlled via a TOML config file, passed as a '-c <ConfigFilePath>'
 /// argument to the program at statup.
 /// See 'example-config.toml' for details.
 /// 
-/// The utility does not itself perform any direct tape-interaction.  Instead, it is designed to take in
-/// 'taskfiles' ( lists of objects associated with some operation ) produced by client programs, 
-/// reformat those taskfiles for ingest by arbitrary tape management program(s), 
+/// The utility does not itself perform any direct tape-interaction.  Instead, it is designed to
+/// take in 'taskfiles' ( lists of objects associated with some operation ) produced by client
+/// programs, reformat those taskfiles for ingest by arbitrary tape management program(s),
 /// check for conflicts between various tasks targeting the same object, 
 /// launch and track the status of tape management program instances,
 /// recognize when the original client program has completed its associated work,
