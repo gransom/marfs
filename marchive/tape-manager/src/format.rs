@@ -45,9 +45,9 @@ pub fn duration_to_string(duration: &Duration) -> String {
     }
 }
 
-/// Logical representation of a location ( file / dir ) within the processing subtree
-///   always represents a path specific to the 'host' value in PROGRAM_CONFIG
-///     ( a program instance should never touch a processing subpath associated with another host )
+/// Logical representation of a location ( file / dir ) within the processing subtree.
+///   Always represents a path specific to the 'host' value in PROGRAM_CONFIG
+///     ( a program instance should never touch a processing subpath associated with another host ).
 ///   'process' is expected to be the pid ( process::id() ) of the utility instance
 ///   'timestamp' is a value unique to a Task instance
 ///   'element' specifies the exact target file / dir
