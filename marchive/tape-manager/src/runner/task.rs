@@ -11,7 +11,7 @@ mod subtask;
 
 use std::{
     cell::RefCell,
-    collections::{HashMap,VecDeque},
+    collections::HashMap,
     fs,
     io::{BufRead, BufReader, ErrorKind, LineWriter, Write},
     marker::PhantomData,
@@ -43,7 +43,6 @@ struct InnerTask {
     taskdef: Arc<ConfigTask>,
     objtable: Rc<RefCell<ObjTable>>,
     parsedoffset: usize,
-    skiplist: VecDeque<usize>,
     pathvals: HashMap<String, String>,
     subtasks: Vec<SubTask>,
     times: Times,
@@ -188,7 +187,6 @@ impl Task<TaskGrabbed> {
             timestamp: SystemTime::now(),
             objtable,
             parsedoffset: 0,
-            skiplist: VecDeque::new(),
             pathvals: HashMap::new(),
             subtasks: Vec::new(),
             times: Times {
@@ -486,7 +484,6 @@ impl Task<TaskGrabbed> {
                     }
                     LookupError::Skip => {
                         // note the skip and continue on
-                        self.itask.skiplist.push_back(index);
                         continue;
                     }
                     LookupError::Conflict(error) => {
