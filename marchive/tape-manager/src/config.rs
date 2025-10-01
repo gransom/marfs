@@ -127,8 +127,8 @@ impl From<(parsing::ParsedConfig, String)> for Config {
                 name if NUMERIC_VALUES.contains(&name) => {
                     format!(r"(?<{}>\d+)", name)
                 }
-                "_" => format!(r"[\.\_\|\w]+"),
-                name => format!(r"(?<{}>[\.\_\|\w]+)", name),
+                "_" => format!(r"[^/\s]+"),
+                name => format!(r"(?<{}>[^/\s]+)", name),
             },
         );
         let task_path_regex = Regex::new(&task_path_regex).unwrap();
@@ -153,8 +153,8 @@ impl From<(parsing::ParsedConfig, String)> for Config {
                 name if NUMERIC_VALUES.contains(&name) => {
                     format!(r"(?<{}>\d+)", name)
                 }
-                "_" => format!(r"[\.\_\|\w]+"),
-                name => format!(r"(?<{}>[\.\_\|\w]+)", name),
+                "_" => format!(r"[^/\s]+"),
+                name => format!(r"(?<{}>[^/\s]+)", name),
             },
         );
         let task_content_regex = Regex::new(&task_content_regex).unwrap();
