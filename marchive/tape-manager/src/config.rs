@@ -7,8 +7,8 @@
 
 mod parsing;
 
-use std::{env, sync::Arc, time};
-use crate::format::{BRACED_NAME_REGEX, ESCAPED_BRACED_NAME_REGEX};
+use std::{env, sync::Arc, time::Duration};
+use crate::format::{duration_from_string, BRACED_NAME_REGEX, ESCAPED_BRACED_NAME_REGEX};
 use regex::{self, Regex};
 
 pub const NUMERIC_VALUES: [&str; 4] = ["pod", "block", "cap", "scatter"];
@@ -25,15 +25,15 @@ const REQUIRED_PATH_VALUE_COUNT: usize = REQUIRED_PATH_VALUES.len();
 #[derive(Debug)]
 pub struct Config {
     // Options
-    pub status_frequency: time::Duration,
-    pub cleanup_frequency: time::Duration,
-    pub scan_frequency: time::Duration,
-    pub filter_frequency: time::Duration,
-    pub poll_frequency: time::Duration,
-    pub check_frequency: time::Duration,
+    pub status_frequency: Duration,
+    pub cleanup_frequency: Duration,
+    pub scan_frequency: Duration,
+    pub filter_frequency: Duration,
+    pub poll_frequency: Duration,
+    pub check_frequency: Duration,
     pub task_parallelism: u32,
-    pub hard_timeout: time::Duration,
-    pub cleanup_timeout: time::Duration,
+    pub hard_timeout: Duration,
+    pub cleanup_timeout: Duration,
     // 'root' omitted, since we chdir at construction
     pub input_subdir: String,
     pub processing_subdir: String,
@@ -64,15 +64,9 @@ pub struct ConfigTask {
     pub file_format_values: Vec<String>,
     pub overrides: Vec<String>,
     pub conflicts: Vec<String>,
-    pub timeout: Option<time::Duration>,
+    pub timeout: Option<Duration>,
 }
-// internal conversion helper for TOML time values
-fn time_to_duration(time: &toml::value::Time) -> time::Duration {
-    time::Duration::new(
-        ((time.hour as u64) * 60 * 60) + ((time.minute as u64) * 60) + (time.second as u64),
-        time.nanosecond,
-    )
-}
+
 
 impl Config {
     /// Initialize a new Config structure, based on the content of the given TOML file and hostname string
@@ -253,28 +247,39 @@ impl From<(parsing::ParsedConfig, String)> for Config {
                 }
             }
             // when instantiating, translate task conflict / override names to indicies
-            tasks.push(Arc::new(ConfigTask {
-                name: task.name.clone(),
-                command: task.command.clone(),
-                command_values: command_values,
-                file_format: task.file_format.clone(),
-                file_format_values: file_format_values,
-                overrides: match &task.overrides {
-                    None => Vec::new(),
-                    Some(list) => list.iter().map(|s| String::from(s)).collect(),
-                },
-                conflicts: match &task.conflicts {
-                    None => Vec::new(),
-                    Some(list) => list.iter().map(|s| String::from(s)).collect(),
-                },
-                timeout: match &task.timeout {
-                    None => None,
-                    Some(timeout) => match timeout.time {
-                        Some(time) => Some(time_to_duration(&time)),
-                        None => None,
-                    },
-                },
-            }));
+            tasks.push(
+                Arc::new(
+                    ConfigTask {
+                        name: task.name.clone(),
+                        command: task.command.clone(),
+                        command_values: command_values,
+                        file_format: task.file_format.clone(),
+                        file_format_values: file_format_values,
+                        overrides: match &task.overrides {
+                            None => Vec::new(),
+                            Some(list) => list.iter().map(|s| String::from(s)).collect(),
+                        },
+                        conflicts: match &task.conflicts {
+                            None => Vec::new(),
+                            Some(list) => list.iter().map(|s| String::from(s)).collect(),
+                        },
+                        timeout: match &task.timeout {
+                            None => None,
+                            Some(timeout) => match duration_from_string(timeout) {
+                                Ok(d) => Some(d),
+                                Err(e) => {
+                                    eprintln!(
+                                        "ERROR: Failed to parse timout value for \"{}\" task: {e}",
+                                        task.name
+                                    );
+                                    panic = true;
+                                    None
+                                }
+                            },
+                        },
+                    }
+                )
+            );
         }
         if panic {
             panic!("Some task definitions were invalid");
@@ -290,15 +295,15 @@ impl From<(parsing::ParsedConfig, String)> for Config {
         }
         // finally, instantiate our config struct
         Config {
-            status_frequency: time_to_duration(&pconfig.options.status_frequency.time.unwrap()),
-            cleanup_frequency: time_to_duration(&pconfig.options.cleanup_frequency.time.unwrap()),
-            scan_frequency: time_to_duration(&pconfig.options.scan_frequency.time.unwrap()),
-            filter_frequency: time_to_duration(&pconfig.options.filter_frequency.time.unwrap()),
-            poll_frequency: time_to_duration(&pconfig.options.poll_frequency.time.unwrap()),
-            check_frequency: time_to_duration(&pconfig.options.check_frequency.time.unwrap()),
+            status_frequency: duration_from_string(&pconfig.options.status_frequency).unwrap_or_else(|e| panic!("failed to parse status frequency value: {e}")),
+            cleanup_frequency: duration_from_string(&pconfig.options.cleanup_frequency).unwrap_or_else(|e| panic!("failed to parse cleanup frequency value: {e}")),
+            scan_frequency: duration_from_string(&pconfig.options.scan_frequency).unwrap_or_else(|e| panic!("failed to parse scan frequency value: {e}")),
+            filter_frequency: duration_from_string(&pconfig.options.filter_frequency).unwrap_or_else(|e| panic!("failed to parse filter frequency value: {e}")),
+            poll_frequency: duration_from_string(&pconfig.options.poll_frequency).unwrap_or_else(|e| panic!("failed to parse poll frequency value: {e}")),
+            check_frequency: duration_from_string(&pconfig.options.check_frequency).unwrap_or_else(|e| panic!("failed to parse check frequency value: {e}")),
             task_parallelism: pconfig.options.task_parallelism,
-            hard_timeout: time_to_duration(&pconfig.options.hard_timeout.time.unwrap()),
-            cleanup_timeout: time_to_duration(&pconfig.options.cleanup_timeout.time.unwrap()),
+            hard_timeout: duration_from_string(&pconfig.options.hard_timeout).unwrap_or_else(|e| panic!("failed to parse hard timeout value: {e}")),
+            cleanup_timeout: duration_from_string(&pconfig.options.cleanup_timeout).unwrap_or_else(|e| panic!("failed to parse cleanup timeout value: {e}")),
             input_subdir: pconfig.options.input_subdir,
             processing_subdir: pconfig.options.processing_subdir,
             output_success_subdir: pconfig.options.output_success_subdir,
