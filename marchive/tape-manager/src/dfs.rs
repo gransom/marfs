@@ -5,13 +5,7 @@
 //
 // MarFS was reviewed and released by LANL under Los Alamos Computer Code identifier: LA-CC-15-039.
 
-use std::{
-    convert::AsRef,
-    collections::VecDeque,
-    fs,
-    io,
-    path
-};
+use std::{collections::VecDeque, convert::AsRef, fs, io, path};
 
 /// Iterator over entries / types encountered during a FS tree depth-first search
 pub struct DFS {

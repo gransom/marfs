@@ -5,8 +5,8 @@
 //
 // MarFS was reviewed and released by LANL under Los Alamos Computer Code identifier: LA-CC-15-039.
 
-use std::fs;
 use serde::Deserialize;
+use std::fs;
 
 /// Representation of the raw config TOML structure
 /// Used for initial parsing, before translation to a more generalized Config

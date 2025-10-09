@@ -5,20 +5,21 @@
 //
 // MarFS was reviewed and released by LANL under Los Alamos Computer Code identifier: LA-CC-15-039.
 
+use crate::PROGRAM_CONFIG;
+use chrono::{DateTime, Local};
+use regex::Regex;
 use std::{
     convert::TryFrom,
     error::Error,
     path::{self, PathBuf},
     sync::LazyLock,
-    time::{Duration, SystemTime}
+    time::{Duration, SystemTime},
 };
-use crate::PROGRAM_CONFIG;
-use chrono::{DateTime, Local};
-use regex::Regex;
 
 /// Static regex for parsing of time duration strings
-static DURATION_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^((?<days>\d+)[dD])?((?<hours>\d+)[hH])?((?<minutes>\d+)[mM])?((?<seconds>\d+)(\.(?<fractional_seconds>\d+))?[sS]?)?$").unwrap());
+static DURATION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^((?<days>\d+)[dD])?((?<hours>\d+)[hH])?((?<minutes>\d+)[mM])?((?<seconds>\d+)(\.(?<fractional_seconds>\d+))?[sS]?)?$").unwrap()
+});
 /// Static regex for replacement of '{...}' strings containing some name value
 pub static BRACED_NAME_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\{(?<name>\w+)\}").unwrap());
@@ -48,14 +49,18 @@ pub fn duration_to_string(duration: &Duration) -> String {
 }
 
 /// Parse a human-readable &str into a Duration type
-pub fn duration_from_string(string: &str) -> Result<Duration,Box<dyn Error>> {
-    let captures = DURATION_REGEX.captures(string).ok_or(regex::Error::Syntax(String::from("invalid duration format")))?;
+pub fn duration_from_string(string: &str) -> Result<Duration, Box<dyn Error>> {
+    let captures = DURATION_REGEX
+        .captures(string)
+        .ok_or(regex::Error::Syntax(String::from(
+            "invalid duration format",
+        )))?;
     let mut sec = 0;
     if let Some(days) = captures.name("days") {
         sec += days.as_str().parse::<u64>()? * 60 * 60 * 24;
     }
     if let Some(hours) = captures.name("hours") {
-        sec+= hours.as_str().parse::<u64>()? * 60 * 60;
+        sec += hours.as_str().parse::<u64>()? * 60 * 60;
     }
     if let Some(minutes) = captures.name("minutes") {
         sec += minutes.as_str().parse::<u64>()? * 60;
@@ -70,7 +75,12 @@ pub fn duration_from_string(string: &str) -> Result<Duration,Box<dyn Error>> {
             if diff < 0 {
                 fs = &fs[..fs.char_indices().nth(9).unwrap().0];
             }
-            fs.parse::<u32>()? * if diff.is_positive() {10_u32.pow(diff as u32)} else {1}
+            fs.parse::<u32>()?
+                * if diff.is_positive() {
+                    10_u32.pow(diff as u32)
+                } else {
+                    1
+                }
         }
         None => 0,
     };
@@ -106,7 +116,11 @@ impl<'p> ProcessingPath<'p> {
     /// If either process or timestamp is None, element must be a ProcessingPathElement::IntermediateDir variant
     /// If process is None, timestamp must be as well ( all Task-specific paths must be associated with a process instance )
     /// Violation of either of the above contraints results in a panic
-    pub fn new(process: Option<u32>, timestamp: Option<SystemTime>, element: ProcessingPathElement<'p>) -> Self {
+    pub fn new(
+        process: Option<u32>,
+        timestamp: Option<SystemTime>,
+        element: ProcessingPathElement<'p>,
+    ) -> Self {
         match (&process, &timestamp, &element) {
             (None,None,ProcessingPathElement::IntermediateDir) => (),
             (Some(_),None,ProcessingPathElement::IntermediateDir) => (),
@@ -126,10 +140,14 @@ impl<'p> ProcessingPath<'p> {
     }
 
     /// 'getter' for process value
-    pub fn process(&self) -> Option<u32> { self.process }
+    pub fn process(&self) -> Option<u32> {
+        self.process
+    }
 
     /// 'getter' for timestamp value
-    pub fn timestamp(&self) -> Option<SystemTime> { self.timestamp }
+    pub fn timestamp(&self) -> Option<SystemTime> {
+        self.timestamp
+    }
 }
 
 impl<'p> TryFrom<&'p path::Path> for ProcessingPath<'p> {
