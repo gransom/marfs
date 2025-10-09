@@ -5,16 +5,16 @@
 //
 // MarFS was reviewed and released by LANL under Los Alamos Computer Code identifier: LA-CC-15-039.
 
+use crate::PROGRAM_CONFIG;
+use chrono::{DateTime, Local};
+use regex::Regex;
 use std::{
     convert::TryFrom,
     error::Error,
     path::{self, PathBuf},
     sync::LazyLock,
-    time::{Duration, SystemTime}
+    time::{Duration, SystemTime},
 };
-use crate::PROGRAM_CONFIG;
-use chrono::{DateTime, Local};
-use regex::Regex;
 
 /// Static regex for parsing of time duration strings
 static DURATION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -116,7 +116,11 @@ impl<'p> ProcessingPath<'p> {
     /// If either process or timestamp is None, element must be a ProcessingPathElement::IntermediateDir variant
     /// If process is None, timestamp must be as well ( all Task-specific paths must be associated with a process instance )
     /// Violation of either of the above contraints results in a panic
-    pub fn new(process: Option<u32>, timestamp: Option<SystemTime>, element: ProcessingPathElement<'p>) -> Self {
+    pub fn new(
+        process: Option<u32>,
+        timestamp: Option<SystemTime>,
+        element: ProcessingPathElement<'p>,
+    ) -> Self {
         match (&process, &timestamp, &element) {
             (None,None,ProcessingPathElement::IntermediateDir) => (),
             (Some(_),None,ProcessingPathElement::IntermediateDir) => (),
@@ -136,10 +140,14 @@ impl<'p> ProcessingPath<'p> {
     }
 
     /// 'getter' for process value
-    pub fn process(&self) -> Option<u32> { self.process }
+    pub fn process(&self) -> Option<u32> {
+        self.process
+    }
 
     /// 'getter' for timestamp value
-    pub fn timestamp(&self) -> Option<SystemTime> { self.timestamp }
+    pub fn timestamp(&self) -> Option<SystemTime> {
+        self.timestamp
+    }
 }
 
 impl<'p> TryFrom<&'p path::Path> for ProcessingPath<'p> {
