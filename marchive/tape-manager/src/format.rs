@@ -15,12 +15,6 @@ use std::{
 use crate::PROGRAM_CONFIG;
 use chrono::{DateTime, Local};
 use regex::Regex;
-use std::{
-    convert::TryFrom,
-    path::{self, PathBuf},
-    sync::LazyLock,
-    time::{Duration, SystemTime},
-};
 
 /// Static regex for parsing of time duration strings
 static DURATION_REGEX: LazyLock<Regex> =
