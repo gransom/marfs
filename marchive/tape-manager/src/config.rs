@@ -7,9 +7,9 @@
 
 mod parsing;
 
-use crate::format::{duration_from_string, BRACED_NAME_REGEX, ESCAPED_BRACED_NAME_REGEX};
+use std::{env, sync::Arc, time};
+use crate::format::{BRACED_NAME_REGEX, ESCAPED_BRACED_NAME_REGEX};
 use regex::{self, Regex};
-use std::{env, sync::Arc, time::Duration};
 
 pub const NUMERIC_VALUES: [&str; 4] = ["pod", "block", "cap", "scatter"];
 pub const REQUIRED_PATH_VALUES: [&str; 1] = ["task"];
