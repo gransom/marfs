@@ -7,6 +7,7 @@
 
 use std::{
     convert::TryFrom,
+    error::Error,
     path::{self, PathBuf},
     sync::LazyLock,
     time::{Duration, SystemTime}

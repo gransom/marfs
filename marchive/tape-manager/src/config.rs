@@ -7,8 +7,8 @@
 
 mod parsing;
 
-use std::{env, sync::Arc, time};
-use crate::format::{BRACED_NAME_REGEX, ESCAPED_BRACED_NAME_REGEX};
+use std::{env, sync::Arc, time::Duration};
+use crate::format::{duration_from_string, BRACED_NAME_REGEX, ESCAPED_BRACED_NAME_REGEX};
 use regex::{self, Regex};
 
 pub const NUMERIC_VALUES: [&str; 4] = ["pod", "block", "cap", "scatter"];
@@ -66,6 +66,7 @@ pub struct ConfigTask {
     pub conflicts: Vec<String>,
     pub timeout: Option<Duration>,
 }
+
 
 impl Config {
     /// Initialize a new Config structure, based on the content of the given TOML file and hostname string
