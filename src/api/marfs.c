@@ -27,11 +27,17 @@
 //   -------------   INTERNAL DEFINITIONS    -------------
 
 #if  __WORDSIZE < 64
-#define MARFS_DIR_NS_OFFSET_BIT 29
+#if  __WORDSIZE < 32
+#error "MarFS directory NS offset bit position could not be determined due to sub-32bit wordsize!"
+#else
+#define MARFS_DIR_NS_OFFSET_BIT 22
+#endif
 #else
 #define MARFS_DIR_NS_OFFSET_BIT 61
 #endif
-#if ( 1UL << MARFS_DIR_NS_OFFSET_BIT ) > LONG_MAX
+#if ( 1L << MARFS_DIR_NS_OFFSET_BIT ) > LONG_MAX  \
+||  ( 1L << MARFS_DIR_NS_OFFSET_BIT ) < LONG_MIN  \
+||  ( 1L << MARFS_DIR_NS_OFFSET_BIT ) == 0
 #error "MarFS directory NS offset bit position is invalid!"
 #endif
 #define MARFS_DIR_NS_OFFSET_MASK (long)( 1L << MARFS_DIR_NS_OFFSET_BIT )
